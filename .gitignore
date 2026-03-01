@@ -1,0 +1,16 @@
+data/raw/*
+data/labeled/*
+data/models/*.pkl
+data/models/*.json
+!data/models/.gitkeep
+__pycache__/
+*.pyc
+.env
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.DS_Store
+.vscode/
+.idea/

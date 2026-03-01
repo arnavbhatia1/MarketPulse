@@ -1,0 +1,53 @@
+project:
+  name: "MarketPulse"
+  version: "1.0.0"
+
+data:
+  mode: "auto"  # "live" | "synthetic" | "auto"
+  storage:
+    raw_dir: "data/raw"
+    labeled_dir: "data/labeled"
+    gold_dir: "data/gold"
+    model_dir: "data/models"
+  synthetic:
+    num_posts: 500
+    seed: 42
+
+ingestion:
+  reddit:
+    subreddits: ["wallstreetbets", "stocks", "investing"]
+    post_limit_per_sub: 200
+    include_comments: false
+    min_score: 5
+  stocktwits:
+    symbols: ["AAPL", "TSLA", "NVDA", "GME", "AMC", "SPY", "MSFT", "AMZN"]
+    limit_per_symbol: 50
+  news:
+    query_terms: ["stock market", "earnings", "IPO", "SEC", "Fed"]
+    language: "en"
+    page_size: 100
+  date_range:
+    start: null
+    end: null
+    default_lookback_days: 7
+
+labeling:
+  aggregation_strategy: "confidence_weighted"  # "majority" | "weighted" | "confidence_weighted"
+  confidence_threshold: 0.6
+  min_votes: 2
+
+model:
+  max_features: 500
+  ngram_range: [1, 2]
+  min_df: 3
+  C: 1.0
+  class_weight: "balanced"
+  test_size: 0.2
+  random_state: 42
+
+evaluation:
+  gold_set_size: 100
+
+dashboard:
+  theme: "dark"
+  port: 8501
