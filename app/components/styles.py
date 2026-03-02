@@ -24,30 +24,28 @@ SENTIMENT_COLORS = {
 
 
 def apply_theme():
-    """Inject custom CSS into Streamlit app."""
+    """Inject custom CSS for MarketPulse-specific components.
+
+    Base dark theme is handled by .streamlit/config.toml — this only
+    styles custom HTML elements (ticker cards, sentiment badges, etc.).
+    """
     import streamlit as st
     st.markdown("""
     <style>
-    .stApp { background-color: #0D1117; }
     .ticker-card {
         background: #161B22;
         border: 1px solid #30363D;
         border-radius: 8px;
         padding: 16px;
         margin: 8px 0;
+        color: #E6EDF3;
     }
     .ticker-card:hover { border-color: #58A6FF; }
-    .sentiment-bullish { color: #00C853; font-weight: bold; }
-    .sentiment-bearish { color: #FF1744; font-weight: bold; }
-    .sentiment-neutral { color: #78909C; font-weight: bold; }
-    .sentiment-meme { color: #FFD600; font-weight: bold; }
-    .metric-card {
-        background: #161B22;
-        border: 1px solid #30363D;
-        border-radius: 8px;
-        padding: 12px 16px;
-        text-align: center;
-    }
+    .ticker-card div { color: #E6EDF3; }
+    .sentiment-bullish { color: #00C853 !important; font-weight: bold; }
+    .sentiment-bearish { color: #FF1744 !important; font-weight: bold; }
+    .sentiment-neutral { color: #78909C !important; font-weight: bold; }
+    .sentiment-meme { color: #FFD600 !important; font-weight: bold; }
     div[data-testid="stMetric"] {
         background: #161B22;
         border: 1px solid #30363D;
