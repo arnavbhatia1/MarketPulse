@@ -11,8 +11,7 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def evaluate_classification(y_true, y_pred, texts=None,
-                            confidence_scores=None, gold_metadata=None):
+def evaluate_classification(y_true, y_pred, texts=None, confidence_scores=None, gold_metadata=None):
     """
     Comprehensive classification evaluation.
 

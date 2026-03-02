@@ -2,9 +2,11 @@ data/raw/*
 data/labeled/*
 data/models/*.pkl
 data/models/*.json
+data/models/v*/
 !data/models/.gitkeep
 __pycache__/
 *.pyc
+.pytest_cache/
 .env
 *.egg-info/
 dist/
