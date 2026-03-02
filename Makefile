@@ -4,24 +4,24 @@ setup:
 	pip install -r requirements.txt
 
 ingest:
-	python scripts/ingest.py --days 7
+	python3 scripts/ingest.py --days 7
 
 label:
-	python scripts/label.py
+	python3 scripts/label.py
 
 train:
-	python scripts/train.py --source programmatic
+	python3 scripts/train.py --source programmatic
 
 evaluate:
-	python scripts/evaluate.py
+	python3 scripts/evaluate.py
 
 run:
-	streamlit run app/streamlit_app.py
+	python3 -m streamlit run app/streamlit_app.py
 
 all: ingest label train evaluate run
 
 pipeline:
-	python scripts/run_pipeline.py
+	python3 scripts/run_pipeline.py
 
 clean:
 	rm -rf data/raw/*
