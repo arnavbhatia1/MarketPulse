@@ -16,7 +16,7 @@ evaluate:
 	python3 scripts/evaluate.py
 
 run:
-	python3 -m streamlit run app/streamlit_app.py
+	python3 -m streamlit run app/MarketPulse.py
 
 all: ingest label train evaluate run
 

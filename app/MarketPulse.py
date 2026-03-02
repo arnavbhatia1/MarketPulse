@@ -2,7 +2,7 @@
 MarketPulse Dashboard -- Main Entry Point
 
 Run with:
-    streamlit run app/streamlit_app.py
+    streamlit run app/MarketPulse.py
 """
 
 import streamlit as st
