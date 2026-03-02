@@ -14,3 +14,5 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+.claude
+.streamlit
