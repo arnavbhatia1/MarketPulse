@@ -1,0 +1,115 @@
+{
+  "training_date": "2026-03-01T21:40:26.238032",
+  "dataset_size": 410,
+  "num_features": 500,
+  "classes": [
+    "bearish",
+    "bullish",
+    "meme",
+    "neutral"
+  ],
+  "config": {
+    "max_features": 500,
+    "ngram_range": [
+      1,
+      2
+    ],
+    "min_df": 2,
+    "C": 1.0,
+    "class_weight": "balanced",
+    "test_size": 0.2,
+    "random_state": 42
+  },
+  "metrics": {
+    "training_metrics": {
+      "accuracy": 0.9359756097560976,
+      "weighted_f1": 0.9364258915667381
+    },
+    "validation_metrics": {
+      "accuracy": 0.6585365853658537,
+      "weighted_f1": 0.6593616813214573,
+      "classification_report": {
+        "bearish": {
+          "precision": 0.6842105263157895,
+          "recall": 0.5909090909090909,
+          "f1-score": 0.6341463414634146,
+          "support": 22.0
+        },
+        "bullish": {
+          "precision": 0.7567567567567568,
+          "recall": 0.7777777777777778,
+          "f1-score": 0.7671232876712328,
+          "support": 36.0
+        },
+        "meme": {
+          "precision": 0.5294117647058824,
+          "recall": 0.5294117647058824,
+          "f1-score": 0.5294117647058824,
+          "support": 17.0
+        },
+        "neutral": {
+          "precision": 0.4444444444444444,
+          "recall": 0.5714285714285714,
+          "f1-score": 0.5,
+          "support": 7.0
+        },
+        "accuracy": 0.6585365853658537,
+        "macro avg": {
+          "precision": 0.6037058730557183,
+          "recall": 0.6173818012053307,
+          "f1-score": 0.6076703484601325,
+          "support": 82.0
+        },
+        "weighted avg": {
+          "precision": 0.6634998284548991,
+          "recall": 0.6585365853658537,
+          "f1-score": 0.6593616813214573,
+          "support": 82.0
+        }
+      }
+    },
+    "confusion_matrix": [
+      [
+        13,
+        5,
+        2,
+        2
+      ],
+      [
+        2,
+        28,
+        5,
+        1
+      ],
+      [
+        2,
+        4,
+        9,
+        2
+      ],
+      [
+        2,
+        0,
+        1,
+        4
+      ]
+    ],
+    "cross_val_scores": {
+      "mean": 0.7271881738053272,
+      "std": 0.047865728432365896,
+      "scores": [
+        0.7349003576903423,
+        0.7770760155934544,
+        0.748174483468601,
+        0.6486018384689108
+      ]
+    },
+    "num_features": 500,
+    "classes": [
+      "bearish",
+      "bullish",
+      "meme",
+      "neutral"
+    ]
+  }
+}
