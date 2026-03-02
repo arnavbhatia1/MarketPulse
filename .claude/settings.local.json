@@ -8,9 +8,13 @@
       "Bash(chmod +x:*)",
       "Bash(pip install:*)",
       "Bash(timeout 10 streamlit run:*)",
+<<<<<<< HEAD
       "Bash(mdfind:*)",
       "Bash(timeout 15 streamlit run:*)",
       "Bash(pip3 list:*)"
+=======
+      "Bash(mdfind:*)"
+>>>>>>> a56094c8cf8e3a1cefaf8776b27931ab78b84146
     ]
   }
 }
