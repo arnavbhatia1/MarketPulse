@@ -25,9 +25,10 @@ Everything is optional. The app works without any keys using synthetic data, and
 | Key | What it enables | Where to get it |
 |-----|----------------|-----------------|
 | `ANTHROPIC_API_KEY` | AI Verdict on briefing cards | [console.anthropic.com](https://console.anthropic.com) → API Keys |
-| `NEWS_API_KEY` | Real financial news ingestion | [newsapi.org](https://newsapi.org/) — free tier available |
 | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | Reddit/WSB posts | [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) → create script app |
 | `STOCKTWITS_ACCESS_TOKEN` | Stocktwits messages | [api.stocktwits.com/developers](https://api.stocktwits.com/developers) |
+
+**News is scraped for free** via Google News RSS and Yahoo Finance RSS — no API key needed.
 
 Set these in your `.env` file (copied from `.env.example`). The app loads it automatically on startup.
 

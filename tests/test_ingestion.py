@@ -77,9 +77,12 @@ class TestIngestionManager:
 
     def test_auto_mode_falls_back(self, config):
         config['data']['mode'] = 'auto'
-        manager = IngestionManager(config)
-        df = manager.ingest()
-        # With no API keys, should fall back to synthetic
+        # Patch news ingester to return empty (simulates all live sources having no data)
+        empty_df = pd.DataFrame(columns=BaseIngester.REQUIRED_COLUMNS)
+        with patch.object(NewsIngester, 'ingest', return_value=empty_df):
+            manager = IngestionManager(config)
+            df = manager.ingest()
+        # Reddit/Stocktwits have no keys; news returns empty → falls back to synthetic
         assert len(df) > 0
         summary = manager.get_source_summary()
         assert summary['used_fallback'] is True
@@ -94,85 +97,66 @@ class TestIngestionManager:
 
 
 class TestNewsIngester:
-    def test_not_available_without_key(self, config):
-        with patch.dict(os.environ, {}, clear=True):
-            ingester = NewsIngester(config)
-            assert ingester.is_available() is False
+    def _make_entry(self, url='https://example.com/article1'):
+        data = {
+            'link': url,
+            'title': 'Fed announces rate decision',
+            'summary': 'The Federal Reserve announced its latest rate decision today.',
+            'author': 'Reuters',
+            'published': 'Fri, 28 Feb 2026 10:00:00 GMT',
+        }
+        entry = MagicMock()
+        entry.get.side_effect = lambda key, default='': data.get(key, default)
+        for k, v in data.items():
+            setattr(entry, k, v)
+        return entry
 
-    def test_available_with_key(self, config):
-        with patch.dict(os.environ, {'NEWS_API_KEY': 'test_key'}):
-            ingester = NewsIngester(config)
-            assert ingester.is_available() is True
+    def test_always_available(self, config):
+        """RSS-based ingester needs no API key — always available."""
+        ingester = NewsIngester(config)
+        assert ingester.is_available() is True
 
-    def test_returns_empty_without_key(self, config):
-        with patch.dict(os.environ, {}, clear=True):
+    def test_mocked_feed_returns_valid_df(self, config):
+        mock_feed = MagicMock()
+        mock_feed.entries = [
+            self._make_entry('https://example.com/a1'),
+            self._make_entry('https://example.com/a2'),
+        ]
+        mock_feed.entries[1].title = 'AAPL earnings beat expectations'
+        mock_feed.entries[1].link = 'https://example.com/a2'
+
+        with patch('src.ingestion.news.feedparser.parse', return_value=mock_feed):
+            ingester = NewsIngester(config)
+            # Wide date range so mock articles (Feb 28) are not filtered out
+            start = datetime(2026, 1, 1)
+            end = datetime(2026, 12, 31)
+            df = ingester.ingest(start, end)
+
+        assert len(df) > 0
+        for col in BaseIngester.REQUIRED_COLUMNS:
+            assert col in df.columns
+        assert (df['source'] == 'news').all()
+        assert df['text'].str.strip().str.len().gt(0).all()
+        assert df['post_id'].str.startswith('news_').all()
+
+    def test_feed_error_returns_empty(self, config):
+        with patch('src.ingestion.news.feedparser.parse', side_effect=Exception("network error")):
             ingester = NewsIngester(config)
             end = datetime.now()
             start = end - timedelta(days=7)
             df = ingester.ingest(start, end)
-            assert len(df) == 0
-            for col in BaseIngester.REQUIRED_COLUMNS:
-                assert col in df.columns
+        assert len(df) == 0
+        for col in BaseIngester.REQUIRED_COLUMNS:
+            assert col in df.columns
 
-    def test_mocked_api_returns_valid_df(self, config):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = {
-            'status': 'ok',
-            'totalResults': 2,
-            'articles': [
-                {
-                    'source': {'name': 'CNBC'},
-                    'author': 'John Doe',
-                    'title': 'Fed announces rate decision',
-                    'description': 'The Federal Reserve announced its latest rate decision today.',
-                    'url': 'https://cnbc.com/article1',
-                    'urlToImage': 'https://cnbc.com/img1.jpg',
-                    'publishedAt': '2026-02-28T10:00:00Z',
-                },
-                {
-                    'source': {'name': 'Reuters'},
-                    'author': 'Jane Smith',
-                    'title': 'AAPL earnings beat expectations',
-                    'description': 'Apple reported quarterly earnings above analyst estimates.',
-                    'url': 'https://reuters.com/article2',
-                    'urlToImage': None,
-                    'publishedAt': '2026-02-28T12:00:00Z',
-                },
-            ]
-        }
+    def test_deduplicates_by_url(self, config):
+        mock_feed = MagicMock()
+        mock_feed.entries = [self._make_entry()]  # same URL in every feed call
 
-        with patch.dict(os.environ, {'NEWS_API_KEY': 'test_key'}):
-            with patch('src.ingestion.news.requests.get', return_value=mock_response):
-                ingester = NewsIngester(config)
-                end = datetime.now()
-                start = end - timedelta(days=7)
-                df = ingester.ingest(start, end)
+        with patch('src.ingestion.news.feedparser.parse', return_value=mock_feed):
+            ingester = NewsIngester(config)
+            end = datetime.now()
+            start = end - timedelta(days=7)
+            df = ingester.ingest(start, end)
 
-                # Should have articles (may be multiplied by number of query terms
-                # since each term hits the mock)
-                assert len(df) > 0
-
-                # Check schema
-                for col in BaseIngester.REQUIRED_COLUMNS:
-                    assert col in df.columns
-
-                # Check source is 'news'
-                assert (df['source'] == 'news').all()
-
-                # Check text is non-empty
-                assert df['text'].str.strip().str.len().gt(0).all()
-
-                # Check post_id format starts with 'news_'
-                assert df['post_id'].str.startswith('news_').all()
-
-    def test_mocked_api_error_handled(self, config):
-        with patch.dict(os.environ, {'NEWS_API_KEY': 'test_key'}):
-            with patch('src.ingestion.news.requests.get', side_effect=Exception("API error")):
-                ingester = NewsIngester(config)
-                end = datetime.now()
-                start = end - timedelta(days=7)
-                df = ingester.ingest(start, end)
-                # Should return empty, not raise
-                assert len(df) == 0
+        assert df['url'].duplicated().sum() == 0

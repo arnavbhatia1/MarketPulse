@@ -1,36 +1,29 @@
-import os
 import hashlib
-import requests
-from datetime import datetime
+import feedparser
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import pandas as pd
 from .base import BaseIngester
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Google News RSS — no API key required
+_GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+# Yahoo Finance RSS per ticker — no API key required
+_YAHOO_FINANCE_RSS = "https://finance.yahoo.com/rss/headline?s={symbol}"
+
 
 class NewsIngester(BaseIngester):
     """
-    Ingest financial news headlines and summaries from NewsAPI.org.
+    Ingest financial news headlines via free RSS feeds — no API key required.
 
-    API endpoint: https://newsapi.org/v2/everything
-    Parameters: q=query, from=date, to=date, language=en, sortBy=publishedAt
+    Sources:
+    - Google News RSS: searched by keyword (stock market, earnings, IPO, etc.)
+    - Yahoo Finance RSS: per tracked ticker symbol
 
-    Implementation details:
-    - Query financial keywords from config
-    - Use article title + description as text (not full article body)
-    - Filter to English only
-    - Deduplicate by URL hash
-    - post_id format: "news_{source_name}_{md5(url)[:12]}"
-
-    Metadata captured:
-    - news_source: str (CNBC, Reuters, Bloomberg, etc.)
-    - article_url: str
-    - image_url: str or null
-    - published_at: datetime
+    post_id format: "news_{source_slug}_{md5(url)[:12]}"
     """
-
-    BASE_URL = "https://newsapi.org/v2/everything"
 
     def __init__(self, config):
         self.config = config
@@ -38,94 +31,85 @@ class NewsIngester(BaseIngester):
         self.query_terms = news_cfg.get(
             'query_terms', ['stock market', 'earnings', 'IPO', 'SEC', 'Fed']
         )
-        self.language = news_cfg.get('language', 'en')
-        self.page_size = news_cfg.get('page_size', 100)
+        # Ticker symbols to fetch per-ticker Yahoo Finance feeds
+        stocktwits_cfg = config.get('ingestion', {}).get('stocktwits', {})
+        self.symbols = stocktwits_cfg.get(
+            'symbols', ['AAPL', 'TSLA', 'NVDA', 'GME', 'MSFT', 'AMZN', 'SPY']
+        )
 
     def is_available(self) -> bool:
-        """Check if News API key exists in environment."""
-        return bool(os.getenv('NEWS_API_KEY'))
+        """Always available — uses free RSS feeds, no API key needed."""
+        return True
 
     def ingest(self, start_date: datetime, end_date: datetime) -> pd.DataFrame:
         """
-        Fetch articles for each configured query term within the date range.
-
-        Loops over query_terms, calls the NewsAPI /v2/everything endpoint,
-        parses articles into the standard schema, and deduplicates by URL.
-        Gracefully skips query terms that return API errors.
+        Fetch news via Google News RSS (keyword searches) and
+        Yahoo Finance RSS (per-ticker feeds). Filters by date range.
         """
-        if not self.is_available():
-            logger.info("News: no API credentials configured, returning empty")
-            return self._empty_dataframe()
-
-        api_key = os.getenv('NEWS_API_KEY')
         rows = []
+        seen_urls = set()
 
+        # Google News: one feed per query term
         for term in self.query_terms:
-            logger.info(f"News: fetching articles for '{term}'...")
-            try:
-                params = {
-                    'q': term,
-                    'from': start_date.strftime('%Y-%m-%d'),
-                    'to': end_date.strftime('%Y-%m-%d'),
-                    'language': self.language,
-                    'sortBy': 'publishedAt',
-                    'pageSize': self.page_size,
-                    'apiKey': api_key,
-                }
-                resp = requests.get(self.BASE_URL, params=params, timeout=30)
-                resp.raise_for_status()
-                data = resp.json()
+            url = _GOOGLE_NEWS_RSS.format(query=term.replace(' ', '+') + '+stock')
+            rows += self._parse_feed(url, f"google_news_{term[:20]}", seen_urls, start_date, end_date)
 
-                articles = data.get('articles', [])
-                for article in articles:
-                    url = article.get('url', '')
-                    if not url:
-                        continue
+        # Yahoo Finance: one feed per ticker
+        for symbol in self.symbols:
+            url = _YAHOO_FINANCE_RSS.format(symbol=symbol)
+            rows += self._parse_feed(url, f"yahoo_{symbol}", seen_urls, start_date, end_date)
 
-                    # Build text from title + description
-                    title = article.get('title') or ''
-                    description = article.get('description') or ''
-                    text = f"{title} {description}".strip()
-                    if not text:
-                        continue
-
-                    # Truncate to 500 chars
-                    text = text[:500]
-
-                    # Generate post_id from source name and URL hash
-                    source_name = (article.get('source') or {}).get('name', 'unknown')
-                    url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
-                    post_id = f"news_{source_name}_{url_hash}".replace(' ', '_')
-
-                    # Parse published timestamp
-                    published = article.get('publishedAt', '')
-                    try:
-                        ts = datetime.strptime(published, '%Y-%m-%dT%H:%M:%SZ')
-                    except (ValueError, TypeError):
-                        ts = datetime.now()
-
-                    rows.append({
-                        'post_id': post_id,
-                        'text': text,
-                        'source': 'news',
-                        'timestamp': ts.isoformat(),
-                        'author': article.get('author') or 'unknown',
-                        'score': 0,
-                        'url': url,
-                        'metadata': str({
-                            'news_source': source_name,
-                            'article_url': url,
-                            'image_url': article.get('urlToImage'),
-                            'published_at': published,
-                        }),
-                    })
-            except Exception as e:
-                logger.warning(f"News: error fetching '{term}': {e}")
-
-        logger.info(f"News: {len(rows)} articles fetched across {len(self.query_terms)} query terms")
+        logger.info(f"News: {len(rows)} articles from RSS feeds")
 
         if not rows:
             return self._empty_dataframe()
 
-        df = pd.DataFrame(rows)
-        return self.validate_output(df)
+        return self.validate_output(pd.DataFrame(rows))
+
+    def _parse_feed(self, feed_url: str, source_slug: str,
+                    seen_urls: set, start_date: datetime, end_date: datetime) -> list:
+        rows = []
+        try:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries:
+                url = entry.get('link', '')
+                if not url or url in seen_urls:
+                    continue
+
+                title = entry.get('title', '')
+                summary = entry.get('summary', '')
+                text = f"{title} {summary}".strip()[:500]
+                if not text:
+                    continue
+
+                ts = self._parse_date(entry)
+                if start_date and ts < start_date:
+                    continue
+                if end_date and ts > end_date:
+                    continue
+
+                seen_urls.add(url)
+                url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+                rows.append({
+                    'post_id': f"news_{source_slug}_{url_hash}",
+                    'text': text,
+                    'source': 'news',
+                    'timestamp': ts.isoformat(),
+                    'author': entry.get('author', 'unknown'),
+                    'score': 0,
+                    'url': url,
+                    'metadata': str({'news_source': source_slug, 'article_url': url}),
+                })
+        except Exception as e:
+            logger.warning(f"News: failed to parse feed {feed_url}: {e}")
+        return rows
+
+    def _parse_date(self, entry) -> datetime:
+        for field in ('published', 'updated'):
+            raw = entry.get(field)
+            if raw:
+                try:
+                    return parsedate_to_datetime(raw).replace(tzinfo=None)
+                except Exception:
+                    pass
+        return datetime.now()
