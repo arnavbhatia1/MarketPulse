@@ -69,6 +69,18 @@ def test_save_and_load_posts(tmp_db, sample_df):
     result = load_posts()
     assert len(result) == 2
     assert set(result['post_id']) == {'reddit_wsb_001', 'news_001'}
+    reddit_row = result[result['post_id'] == 'reddit_wsb_001'].iloc[0]
+    assert reddit_row['tickers'] == ['NVIDIA']  # JSON round-trip
+    assert reddit_row['sentiment'] == 'bullish'
+    assert abs(reddit_row['confidence'] - 0.82) < 0.001
+
+
+def test_save_posts_empty_df(tmp_db):
+    """save_posts with empty DataFrame should not crash."""
+    from src.storage.db import save_posts, load_posts
+    save_posts(pd.DataFrame())
+    result = load_posts()
+    assert len(result) == 0
 
 
 def test_load_posts_filters_by_date(tmp_db, sample_df):
