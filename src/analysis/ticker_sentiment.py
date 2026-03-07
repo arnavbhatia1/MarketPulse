@@ -33,22 +33,21 @@ class TickerSentimentAnalyzer:
         """
         Analyze per-ticker sentiment from labeled DataFrame.
 
-        Args:
-            df: DataFrame with 'text', 'programmatic_label',
-                'label_confidence' columns. 'tickers' column optional
-                (will extract if missing).
-
-        Returns:
-            dict mapping company name to ticker summary dict.
+        Returns dict mapping company name to ticker summary dict.
+        New fields vs. original: reddit_sentiment, news_sentiment,
+        stocktwits_sentiment, sentiment_by_day, top_posts.
         """
         df = df.copy()
 
-        # Extract tickers if not already present
         if 'tickers' not in df.columns:
             df['tickers'] = df['text'].apply(self.extractor.extract)
 
-        # Only use labeled posts
         labeled = df[df['programmatic_label'].notna()].copy()
+
+        # Normalize timestamp to date string for grouping
+        labeled['_date'] = pd.to_datetime(
+            labeled['timestamp'], errors='coerce'
+        ).dt.strftime('%Y-%m-%d').fillna('unknown')
 
         ticker_data = {}
 
@@ -62,32 +61,62 @@ class TickerSentimentAnalyzer:
                     ticker_data[company] = {
                         'company': company,
                         'symbol': self._ticker_to_symbol.get(company, ''),
-                        'posts': [],
-                        'sentiments': [],
-                        'confidences': [],
+                        'all_posts': [],
                     }
 
-                ticker_data[company]['posts'].append({
-                    'post_id': row.get('post_id', ''),
-                    'text': row['text'],
+                ticker_data[company]['all_posts'].append({
+                    'post_id': str(row.get('post_id', '')),
+                    'text': str(row['text']),
                     'sentiment': row['programmatic_label'],
                     'confidence': float(row.get('label_confidence', 0)),
-                    'source': row.get('source', 'unknown'),
+                    'source': str(row.get('source', 'unknown')),
                     'timestamp': str(row.get('timestamp', '')),
-                    'author': row.get('author', 'unknown'),
+                    'date': str(row['_date']),
+                    'author': str(row.get('author', 'unknown')),
+                    'url': str(row.get('url', '')),
                 })
-                ticker_data[company]['sentiments'].append(row['programmatic_label'])
-                ticker_data[company]['confidences'].append(
-                    float(row.get('label_confidence', 0))
-                )
 
-        # Build summaries
         results = {}
         for company, data in ticker_data.items():
-            sentiment_counts = Counter(data['sentiments'])
-            total = len(data['sentiments'])
-            dominant = sentiment_counts.most_common(1)[0][0] if total > 0 else 'neutral'
+            posts = data['all_posts']
+            total = len(posts)
+            if total == 0:
+                continue
 
+            all_sentiments = [p['sentiment'] for p in posts]
+            sentiment_counts = Counter(all_sentiments)
+            dominant = sentiment_counts.most_common(1)[0][0]
+
+            # Per-source dominant sentiment
+            source_sentiments = {}
+            for src in ('reddit', 'stocktwits', 'news'):
+                src_posts = [p for p in posts if p['source'] == src]
+                if src_posts:
+                    src_counts = Counter(p['sentiment'] for p in src_posts)
+                    source_sentiments[src] = src_counts.most_common(1)[0][0]
+                else:
+                    source_sentiments[src] = None
+
+            # Dominant sentiment per day
+            day_groups = {}
+            for p in posts:
+                day_groups.setdefault(p['date'], []).append(p['sentiment'])
+            sentiment_by_day = {
+                day: Counter(sentiments).most_common(1)[0][0]
+                for day, sentiments in day_groups.items()
+            }
+
+            # Top 3 posts per source sorted by confidence desc
+            top_posts = {}
+            for src in ('reddit', 'stocktwits', 'news'):
+                src_posts = sorted(
+                    [p for p in posts if p['source'] == src],
+                    key=lambda p: p['confidence'], reverse=True
+                )[:3]
+                if src_posts:
+                    top_posts[src] = src_posts
+
+            confidences = [p['confidence'] for p in posts]
             results[company] = {
                 'company': company,
                 'symbol': data['symbol'],
@@ -95,16 +124,21 @@ class TickerSentimentAnalyzer:
                 'sentiment': dict(sentiment_counts),
                 'dominant_sentiment': dominant,
                 'dominant_color': SENTIMENT_COLORS.get(dominant, '#78909C'),
-                'bullish_ratio': sentiment_counts.get('bullish', 0) / total if total > 0 else 0,
-                'bearish_ratio': sentiment_counts.get('bearish', 0) / total if total > 0 else 0,
-                'avg_confidence': sum(data['confidences']) / len(data['confidences']) if data['confidences'] else 0,
-                'posts': sorted(data['posts'], key=lambda p: p['confidence'], reverse=True),
+                'bullish_ratio': sentiment_counts.get('bullish', 0) / total,
+                'bearish_ratio': sentiment_counts.get('bearish', 0) / total,
+                'avg_confidence': sum(confidences) / len(confidences),
+                'reddit_sentiment': source_sentiments['reddit'],
+                'news_sentiment': source_sentiments['news'],
+                'stocktwits_sentiment': source_sentiments['stocktwits'],
+                'sentiment_by_day': sentiment_by_day,
+                'top_posts': top_posts,
+                'posts': sorted(posts, key=lambda p: p['confidence'], reverse=True),
             }
 
-        # Sort by mention count
-        results = dict(sorted(results.items(), key=lambda x: x[1]['mention_count'], reverse=True))
-
-        logger.info(f"Ticker analysis: {len(results)} tickers found across {len(labeled)} labeled posts")
+        results = dict(sorted(
+            results.items(), key=lambda x: x[1]['mention_count'], reverse=True
+        ))
+        logger.info(f"Ticker analysis: {len(results)} tickers, {len(labeled)} labeled posts")
         return results
 
     def get_market_summary(self, ticker_results):
