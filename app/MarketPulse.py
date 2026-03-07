@@ -7,10 +7,13 @@ Run: streamlit run app/MarketPulse.py
 import streamlit as st
 import sys, os, json
 from datetime import date, timedelta
+from dotenv import load_dotenv
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
     sys.path.insert(0, _root)
+
+load_dotenv(os.path.join(_root, '.env'))
 
 from app.components.styles import apply_theme, COLORS, SENTIMENT_COLORS
 from app.components.charts import ticker_mentions_bar
