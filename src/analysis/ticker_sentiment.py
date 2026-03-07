@@ -107,14 +107,13 @@ class TickerSentimentAnalyzer:
             }
 
             # Top 3 posts per source sorted by confidence desc
-            top_posts = {}
+            top_posts = {'reddit': [], 'stocktwits': [], 'news': []}
             for src in ('reddit', 'stocktwits', 'news'):
                 src_posts = sorted(
                     [p for p in posts if p['source'] == src],
                     key=lambda p: p['confidence'], reverse=True
                 )[:3]
-                if src_posts:
-                    top_posts[src] = src_posts
+                top_posts[src] = src_posts
 
             confidences = [p['confidence'] for p in posts]
             results[company] = {

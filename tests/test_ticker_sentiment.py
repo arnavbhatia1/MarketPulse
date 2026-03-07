@@ -12,8 +12,8 @@ from src.analysis.ticker_sentiment import TickerSentimentAnalyzer
 @pytest.fixture
 def multi_source_df():
     return pd.DataFrame([
-        {'text': 'Loading TSLA calls 🚀', 'source': 'reddit',
-         'programmatic_label': 'bullish', 'label_confidence': 0.8,
+        {'text': 'TSLA puts loaded, P/E insane 📉', 'source': 'reddit',
+         'programmatic_label': 'bearish', 'label_confidence': 0.8,
          'tickers': ['Tesla'], 'timestamp': '2026-03-07 10:00:00'},
         {'text': 'Shorting TSLA, overvalued', 'source': 'stocktwits',
          'programmatic_label': 'bearish', 'label_confidence': 0.75,
@@ -36,6 +36,7 @@ def test_per_source_sentiment(multi_source_df):
     assert 'stocktwits_sentiment' in tesla
     assert tesla['news_sentiment'] == 'neutral'
     assert tesla['stocktwits_sentiment'] == 'bearish'
+    assert tesla['reddit_sentiment'] == 'bearish'
 
 
 def test_sentiment_by_day(multi_source_df):
