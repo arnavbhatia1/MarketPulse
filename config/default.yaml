@@ -3,15 +3,12 @@ project:
   version: "1.0.0"
 
 data:
-  mode: "auto"  # "live" | "synthetic" | "auto"
+  mode: "auto"  # "live" | "auto" (news RSS always available, no fallback needed)
   storage:
     raw_dir: "data/raw"
     labeled_dir: "data/labeled"
     gold_dir: "data/gold"
     model_dir: "data/models"
-  synthetic:
-    num_posts: 500
-    seed: 42
 
 ingestion:
   reddit:

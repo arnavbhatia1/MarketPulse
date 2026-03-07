@@ -1,17 +1,10 @@
 """
 Ingestion Manager — orchestrates data ingestion across all sources.
 
-Behavior by mode:
-  - "auto": Attempts all configured live sources, falls back to synthetic if none available
-  - "live": Only live sources, raises error if no API keys configured and no data retrieved
-  - "synthetic": Only synthetic data, no API keys needed
+Sources: Reddit (requires API key), Stocktwits (requires API key),
+         News (free RSS — always available).
 
-Features:
-  - Deduplication across sources (same post might appear on multiple platforms)
-  - Schema validation for all ingested data
-  - Caching support (optional)
-  - Combines multiple sources into unified DataFrame
-  - Comprehensive logging of source-level statistics
+At least one source always has data because NewsIngester uses free RSS feeds.
 """
 
 from datetime import datetime, timedelta
@@ -19,7 +12,6 @@ import pandas as pd
 from .reddit import RedditIngester
 from .stocktwits import StocktwitsIngester
 from .news import NewsIngester
-from .synthetic import SyntheticIngester
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -46,9 +38,6 @@ class IngestionManager:
             config: Configuration dict with structure from default.yaml
         """
         self.config = config
-        self.synthetic = SyntheticIngester(config)
-
-        # Register all live sources
         self.live_sources = [
             ('reddit', RedditIngester(config)),
             ('stocktwits', StocktwitsIngester(config)),
@@ -98,50 +87,30 @@ class IngestionManager:
         frames = []
         sources_used = []
         sources_unavailable = []
-        used_fallback = False
 
-        # Attempt live sources if mode is 'live' or 'auto'
-        if mode in ('live', 'auto'):
-            for source_name, source in self.live_sources:
-                if source.is_available():
-                    logger.info(f"Ingesting from {source_name}...")
-                    try:
-                        df = source.ingest(start_date, end_date)
-                        if len(df) > 0:
-                            # Validate the output before using it
-                            df = source.validate_output(df)
-                            frames.append(df)
-                            sources_used.append(source_name)
-                            logger.info(f"  {source_name}: {len(df)} posts")
-                        else:
-                            logger.info(f"  {source_name}: no data in date range")
-                    except Exception as e:
-                        logger.warning(f"  {source_name} ingestion failed: {e}")
-                        sources_unavailable.append(source_name)
-                else:
+        for source_name, source in self.live_sources:
+            if source.is_available():
+                logger.info(f"Ingesting from {source_name}...")
+                try:
+                    df = source.ingest(start_date, end_date)
+                    if len(df) > 0:
+                        df = source.validate_output(df)
+                        frames.append(df)
+                        sources_used.append(source_name)
+                        logger.info(f"  {source_name}: {len(df)} posts")
+                    else:
+                        logger.info(f"  {source_name}: no data in date range")
+                except Exception as e:
+                    logger.warning(f"  {source_name} ingestion failed: {e}")
                     sources_unavailable.append(source_name)
-                    logger.info(f"  {source_name}: not available (missing API credentials)")
+            else:
+                sources_unavailable.append(source_name)
+                logger.info(f"  {source_name}: not available (missing API credentials)")
 
-        # Handle fallback logic
-        if mode == 'live' and not frames:
-            raise RuntimeError(
-                "Live mode selected but no data sources are available or returned data. "
-                "Please configure API credentials or switch to 'auto' or 'synthetic' mode."
-            )
-
-        if mode == 'synthetic' or (mode == 'auto' and not frames):
-            logger.info("Using synthetic data (fallback)")
-            df = self.synthetic.ingest(start_date, end_date)
-            df = self.synthetic.validate_output(df)
-            frames.append(df)
-            sources_used.append('synthetic')
-            used_fallback = True
-            logger.info(f"  synthetic: {len(df)} posts")
-
-        # Combine all frames
         if not frames:
-            # Edge case: no sources available and mode is 'live'
-            raise RuntimeError("No data sources available for ingestion")
+            raise RuntimeError(
+                "No data ingested. News RSS should always provide data — check network connectivity."
+            )
 
         combined = pd.concat(frames, ignore_index=True)
         initial_count = len(combined)
@@ -170,12 +139,10 @@ class IngestionManager:
             },
             'posts_per_source': posts_per_source,
             'mode': mode,
-            'used_fallback': used_fallback,
         }
 
         logger.info(
-            f"Ingestion complete: {len(combined)} total posts from {sources_used} "
-            f"(fallback={'yes' if used_fallback else 'no'})"
+            f"Ingestion complete: {len(combined)} total posts from {sources_used}"
         )
 
         return combined
@@ -191,8 +158,7 @@ class IngestionManager:
             - sources_unavailable: list of source names that were not available
             - date_range: dict with 'start' and 'end' datetime objects
             - posts_per_source: dict mapping source name to post count
-            - mode: str ('live', 'synthetic', or 'auto')
-            - used_fallback: bool
+            - mode: str ('live' or 'auto')
 
             If ingest() has not been called yet, returns a minimal dict with
             total_posts=0 and mode='not_run'.
@@ -205,6 +171,5 @@ class IngestionManager:
                 'date_range': {'start': None, 'end': None},
                 'posts_per_source': {},
                 'mode': 'not_run',
-                'used_fallback': False,
             }
         return self._summary

@@ -57,6 +57,7 @@ def init_db():
                 last_updated          TEXT,
                 dominant_sentiment    TEXT,
                 mention_count         INTEGER DEFAULT 0,
+                avg_confidence        REAL DEFAULT 0.0,
                 reddit_sentiment      TEXT,
                 news_sentiment        TEXT,
                 stocktwits_sentiment  TEXT,
@@ -149,15 +150,16 @@ def save_ticker_cache(ticker_results: dict):
             conn.execute(
                 """INSERT OR REPLACE INTO ticker_cache
                    (ticker, symbol, last_updated, dominant_sentiment, mention_count,
-                    reddit_sentiment, news_sentiment, stocktwits_sentiment,
-                    sentiment_by_day, top_posts)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    avg_confidence, reddit_sentiment, news_sentiment,
+                    stocktwits_sentiment, sentiment_by_day, top_posts)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     company,
                     data.get('symbol', ''),
                     now,
                     data.get('dominant_sentiment', 'neutral'),
                     int(data.get('mention_count', 0)),
+                    float(data.get('avg_confidence', 0.0)),
                     data.get('reddit_sentiment', 'neutral'),
                     data.get('news_sentiment', 'neutral'),
                     data.get('stocktwits_sentiment', 'neutral'),

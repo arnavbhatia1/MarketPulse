@@ -20,7 +20,7 @@ Opens at **http://localhost:8501**. On first load the market grid is empty — c
 
 ## API Keys
 
-Everything is optional. The app works without any keys using synthetic data, and without `ANTHROPIC_API_KEY` using a static fallback message.
+News is ingested for free via RSS (no key needed). Reddit and Stocktwits are optional extras. Without `ANTHROPIC_API_KEY` the AI Verdict shows a static fallback.
 
 | Key | What it enables | Where to get it |
 |-----|----------------|-----------------|
@@ -35,7 +35,7 @@ Set these in your `.env` file (copied from `.env.example`). The app loads it aut
 ## How It Works
 
 ```
-Ingest (Reddit + Stocktwits + NewsAPI, or synthetic fallback)
+Ingest (Reddit + Stocktwits + free News RSS)
         ↓
 Keyword majority vote → training labels
         ↓
@@ -83,9 +83,6 @@ MarketPulse/
 ```bash
 # Full pipeline (ingest → label → train → analyze → SQLite)
 python scripts/run_pipeline.py
-
-# Synthetic data only (no API keys needed)
-python scripts/run_pipeline.py --synthetic
 
 # Tests
 pytest tests/ -v

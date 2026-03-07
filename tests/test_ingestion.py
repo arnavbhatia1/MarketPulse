@@ -1,5 +1,5 @@
 """
-Tests for ingestion system: synthetic, manager, and news (mocked).
+Tests for ingestion system: manager and news (mocked).
 """
 
 import os
@@ -9,55 +9,32 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from src.ingestion.base import BaseIngester
-from src.ingestion.synthetic import SyntheticIngester
 from src.ingestion.manager import IngestionManager
 from src.ingestion.news import NewsIngester
 
 
-class TestSyntheticIngester:
-    def test_is_always_available(self, config):
-        ingester = SyntheticIngester(config)
-        assert ingester.is_available() is True
-
-    def test_returns_valid_schema(self, config):
-        ingester = SyntheticIngester(config)
-        end = datetime.now()
-        start = end - timedelta(days=7)
-        df = ingester.ingest(start, end)
-
-        for col in BaseIngester.REQUIRED_COLUMNS:
-            assert col in df.columns, f"Missing column: {col}"
-
-    def test_returns_expected_row_count(self, config):
-        ingester = SyntheticIngester(config)
-        end = datetime.now()
-        start = end - timedelta(days=7)
-        df = ingester.ingest(start, end)
-        # Synthetic data should have substantial content
-        assert len(df) > 100
-
-    def test_source_column_is_synthetic(self, config):
-        ingester = SyntheticIngester(config)
-        end = datetime.now()
-        start = end - timedelta(days=7)
-        df = ingester.ingest(start, end)
-        assert (df['source'] == 'synthetic').all()
-
-    def test_no_empty_texts(self, config):
-        ingester = SyntheticIngester(config)
-        end = datetime.now()
-        start = end - timedelta(days=7)
-        df = ingester.ingest(start, end)
-        assert df['text'].str.strip().str.len().gt(0).all()
-
-
 class TestIngestionManager:
-    def test_synthetic_mode(self, config):
-        config['data']['mode'] = 'synthetic'
-        manager = IngestionManager(config)
-        df = manager.ingest()
+    def _news_df(self):
+        """Minimal valid news DataFrame for mocking."""
+        return pd.DataFrame([{
+            'post_id': 'news_test_001',
+            'text': 'Fed announces rate decision today',
+            'source': 'news',
+            'timestamp': '2026-03-07 10:00:00',
+            'author': 'Reuters',
+            'score': 0,
+            'url': 'https://example.com/1',
+            'metadata': '{}',
+        }])
+
+    def test_auto_mode_uses_news(self, config):
+        """Auto mode ingests from news RSS (always available, no keys needed)."""
+        config['data']['mode'] = 'auto'
+        with patch.object(NewsIngester, 'ingest', return_value=self._news_df()):
+            manager = IngestionManager(config)
+            df = manager.ingest()
         assert len(df) > 0
-        assert 'synthetic' in df['source'].values
+        assert 'news' in df['source'].values
 
     def test_get_source_summary_before_ingest(self, config):
         manager = IngestionManager(config)
@@ -66,34 +43,30 @@ class TestIngestionManager:
         assert summary['mode'] == 'not_run'
 
     def test_get_source_summary_after_ingest(self, config):
-        config['data']['mode'] = 'synthetic'
-        manager = IngestionManager(config)
-        manager.ingest()
+        config['data']['mode'] = 'auto'
+        with patch.object(NewsIngester, 'ingest', return_value=self._news_df()):
+            manager = IngestionManager(config)
+            manager.ingest()
         summary = manager.get_source_summary()
         assert summary['total_posts'] > 0
-        assert 'synthetic' in summary['sources_used']
-        assert summary['mode'] == 'synthetic'
-        assert summary['used_fallback'] is True
-
-    def test_auto_mode_falls_back(self, config):
-        config['data']['mode'] = 'auto'
-        # Patch news ingester to return empty (simulates all live sources having no data)
-        empty_df = pd.DataFrame(columns=BaseIngester.REQUIRED_COLUMNS)
-        with patch.object(NewsIngester, 'ingest', return_value=empty_df):
-            manager = IngestionManager(config)
-            df = manager.ingest()
-        # Reddit/Stocktwits have no keys; news returns empty → falls back to synthetic
-        assert len(df) > 0
-        summary = manager.get_source_summary()
-        assert summary['used_fallback'] is True
+        assert 'news' in summary['sources_used']
 
     def test_date_range_defaults(self, config):
-        config['data']['mode'] = 'synthetic'
-        manager = IngestionManager(config)
-        manager.ingest()
+        config['data']['mode'] = 'auto'
+        with patch.object(NewsIngester, 'ingest', return_value=self._news_df()):
+            manager = IngestionManager(config)
+            manager.ingest()
         summary = manager.get_source_summary()
         assert summary['date_range']['start'] is not None
         assert summary['date_range']['end'] is not None
+
+    def test_raises_when_all_sources_fail(self, config):
+        """Raises RuntimeError if all sources return no data."""
+        empty_df = pd.DataFrame(columns=BaseIngester.REQUIRED_COLUMNS)
+        with patch.object(NewsIngester, 'ingest', return_value=empty_df):
+            manager = IngestionManager(config)
+            with pytest.raises(RuntimeError):
+                manager.ingest()
 
 
 class TestNewsIngester:
