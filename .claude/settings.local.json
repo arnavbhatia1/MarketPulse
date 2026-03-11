@@ -9,7 +9,9 @@
       "Bash(cd \"C:\\\\Users\\\\abhat\\\\Personal\\\\MarketPulse\" && python -m pytest tests/test_news_improvements.py -v 2>&1)",
       "Bash(cd \"C:\\\\Users\\\\abhat\\\\Personal\\\\MarketPulse\" && python -m pytest tests/ -v 2>&1)",
       "Bash(cd \"C:\\\\Users\\\\abhat\\\\Personal\\\\MarketPulse\" && python -m pytest tests/ -v --tb=short 2>&1 | tail -20)",
-      "Bash(python -m pytest tests/ -v 2>&1)"
+      "Bash(python -m pytest tests/ -v 2>&1)",
+      "Bash(python -m pytest tests/ -v --tb=short 2>&1 | tail -10)",
+      "Bash(git branch:*)"
     ]
   }
 }
