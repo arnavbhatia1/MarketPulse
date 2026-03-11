@@ -147,3 +147,36 @@ def probability_bar(probabilities):
     return fig
 
 
+def sentiment_trend(by_day, sentiment_colors=None):
+    """7-day sentiment trend as a line chart with colored markers."""
+    if not sentiment_colors:
+        sentiment_colors = SENTIMENT_COLORS
+    days = sorted(by_day.keys())
+    sentiments = [by_day[d] for d in days]
+    marker_colors = [sentiment_colors.get(s, COLORS['secondary']) for s in sentiments]
+    sentiment_map = {'bullish': 3, 'neutral': 2, 'meme': 1, 'bearish': 0}
+    y_values = [sentiment_map.get(s, 2) for s in sentiments]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=days, y=y_values,
+        mode='lines+markers',
+        line=dict(color=COLORS['primary'], width=2),
+        marker=dict(color=marker_colors, size=12, line=dict(width=2, color='#0D1117')),
+        text=[s.upper() for s in sentiments],
+        hovertemplate='%{x}<br>%{text}<extra></extra>',
+    ))
+    fig.update_layout(
+        template='plotly_dark',
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        height=250,
+        margin=dict(l=0, r=0, t=10, b=30),
+        showlegend=False,
+        yaxis=dict(
+            ticktext=['BEARISH', 'MEME', 'NEUTRAL', 'BULLISH'],
+            tickvals=[0, 1, 2, 3],
+            gridcolor='#30363D',
+        ),
+        xaxis=dict(gridcolor='#30363D'),
+    )
+    return fig
