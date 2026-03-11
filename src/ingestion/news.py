@@ -46,10 +46,10 @@ class NewsIngester(BaseIngester):
             'query_terms', ['stock market', 'earnings', 'IPO', 'SEC', 'Fed']
         )
         # Ticker symbols to fetch per-ticker Yahoo Finance feeds
-        stocktwits_cfg = config.get('ingestion', {}).get('stocktwits', {})
-        self.symbols = stocktwits_cfg.get(
-            'symbols', ['AAPL', 'TSLA', 'NVDA', 'GME', 'MSFT', 'AMZN', 'SPY']
+        self.symbols = news_cfg.get(
+            'symbols', ['AAPL', 'TSLA', 'NVDA', 'GME', 'AMC', 'SPY', 'MSFT', 'AMZN']
         )
+        self.additional_feeds = news_cfg.get('additional_feeds', [])
 
     def is_available(self) -> bool:
         """Always available — uses free RSS feeds, no API key needed."""
@@ -72,6 +72,13 @@ class NewsIngester(BaseIngester):
         for symbol in self.symbols:
             url = _YAHOO_FINANCE_RSS.format(symbol=symbol)
             rows += self._parse_feed(url, f"yahoo_{symbol}", seen_urls, start_date, end_date)
+
+        # Additional RSS feeds (CNBC, MarketWatch, etc.)
+        for feed_info in self.additional_feeds:
+            feed_url = feed_info.get('url', '')
+            feed_name = feed_info.get('name', 'extra')
+            if feed_url:
+                rows += self._parse_feed(feed_url, feed_name, seen_urls, start_date, end_date)
 
         logger.info(f"News: {len(rows)} articles from RSS feeds")
 

@@ -21,8 +21,15 @@ ingestion:
     limit_per_symbol: 50
   news:
     query_terms: ["stock market", "earnings", "IPO", "SEC", "Fed"]
+    symbols: ["AAPL", "TSLA", "NVDA", "GME", "AMC", "SPY", "MSFT", "AMZN",
+              "META", "NFLX", "AMD", "INTC", "GOOG", "DIS", "COIN", "HOOD",
+              "PLTR", "NIO", "SOFI", "QQQ"]
+    additional_feeds:
+      - url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"
+        name: "cnbc_markets"
+      - url: "https://feeds.marketwatch.com/marketwatch/topstories/"
+        name: "marketwatch"
     language: "en"
-    page_size: 100
   date_range:
     start: null
     end: null
