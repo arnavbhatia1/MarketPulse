@@ -31,6 +31,9 @@ st.set_page_config(
 
 apply_theme()
 
+# Query param navigation
+query_ticker = st.query_params.get("ticker", None)
+
 # ---------------------------------------------------------------------------
 # Sidebar navigation
 # ---------------------------------------------------------------------------
@@ -66,12 +69,13 @@ except Exception:
 # ---------------------------------------------------------------------------
 ticker_options = list(ticker_results.keys()) if ticker_results else []
 
-# Resolve the selected ticker: prefer session_state if it is valid,
-# otherwise fall back to the selectbox default.
-session_ticker = st.session_state.get("selected_ticker", None)
+# Resolve the selected ticker: prefer query_ticker first, then session_state,
+# then fall back to default index 0.
 default_index = 0
-if session_ticker and session_ticker in ticker_options:
-    default_index = ticker_options.index(session_ticker)
+if query_ticker and query_ticker in ticker_options:
+    default_index = ticker_options.index(query_ticker)
+elif st.session_state.get("selected_ticker") and st.session_state["selected_ticker"] in ticker_options:
+    default_index = ticker_options.index(st.session_state["selected_ticker"])
 
 if not ticker_options:
     st.title("Ticker Detail")
@@ -100,7 +104,6 @@ ticker_data = ticker_results[selected_company]
 # ---------------------------------------------------------------------------
 symbol = ticker_data.get("symbol", selected_company.upper())
 sentiment = ticker_data.get("dominant_sentiment", "neutral")
-color = SENTIMENT_COLORS.get(sentiment, COLORS["secondary"])
 
 st.markdown(
     f"""
@@ -109,8 +112,8 @@ st.markdown(
         &nbsp;
         <span style="color:#8B949E; font-size:1.3em;">{selected_company}</span>
     </div>
-    <div class="sentiment-{sentiment}" style="font-size:1.5em; margin-bottom:16px;">
-        {sentiment.upper()}
+    <div style="margin-bottom:16px;">
+        <span class="sentiment-badge sentiment-badge-{sentiment}">{sentiment.upper()}</span>
     </div>
     """,
     unsafe_allow_html=True,
@@ -119,10 +122,9 @@ st.markdown(
 st.markdown("---")
 
 # ---------------------------------------------------------------------------
-# Metrics row
+# Metrics row — 3 columns: Mentions, Bullish %, Bearish %
 # ---------------------------------------------------------------------------
 mention_count = ticker_data.get("mention_count", 0)
-avg_conf = ticker_data.get("avg_confidence", 0.0)
 
 # Compute bullish/bearish ratios from the sentiment distribution if available.
 sentiment_dist = ticker_data.get("sentiment", {})
@@ -131,11 +133,10 @@ total_labeled = sum(sentiment_dist.values()) if sentiment_dist else 0
 bullish_ratio = sentiment_dist.get("bullish", 0) / total_labeled if total_labeled else 0.0
 bearish_ratio = sentiment_dist.get("bearish", 0) / total_labeled if total_labeled else 0.0
 
-col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+col_k1, col_k2, col_k3 = st.columns(3)
 col_k1.metric("Mentions", f"{mention_count:,}")
-col_k2.metric("Avg Confidence", f"{avg_conf:.1%}")
-col_k3.metric("Bullish Ratio", f"{bullish_ratio:.1%}")
-col_k4.metric("Bearish Ratio", f"{bearish_ratio:.1%}")
+col_k2.metric("Bullish %", f"{bullish_ratio:.1%}")
+col_k3.metric("Bearish %", f"{bearish_ratio:.1%}")
 
 st.markdown("---")
 
@@ -221,14 +222,29 @@ else:
             display_df["timestamp"], errors="coerce"
         ).dt.strftime("%Y-%m-%d %H:%M")
 
-    # Show the table — sort by confidence descending so clearest posts appear first.
-    sort_col = "confidence" if "confidence" in display_df.columns else None
+    # Build styled HTML table with evidence-table CSS class and badge pills.
+    col_order = [c for c in ["text", "sentiment", "confidence", "source", "timestamp"] if c in display_df.columns]
+    display_df = display_df[col_order]
 
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        height=350,
-    )
+    header_cells = "".join(f"<th>{col.capitalize()}</th>" for col in col_order)
+    rows_html = ""
+    for _, row in display_df.iterrows():
+        cells = ""
+        for col in col_order:
+            val = row[col] if pd.notna(row[col]) else "—"
+            if col == "sentiment" and val != "—":
+                cells += f'<td><span class="sentiment-badge sentiment-badge-{val}">{str(val).upper()}</span></td>'
+            else:
+                cells += f"<td>{val}</td>"
+        rows_html += f"<tr>{cells}</tr>"
+
+    table_html = f"""
+    <table class="evidence-table">
+        <thead><tr>{header_cells}</tr></thead>
+        <tbody>{rows_html}</tbody>
+    </table>
+    """
+    st.markdown(table_html, unsafe_allow_html=True)
 
     # CSV download button.
     csv_data = evidence_posts.to_csv(index=False).encode("utf-8")
