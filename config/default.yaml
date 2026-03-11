@@ -55,3 +55,38 @@ evaluation:
 dashboard:
   theme: "dark"
   port: 8501
+
+investor:
+  formula_weights:
+    conservative: {sentiment: 0.15, valuation: 0.40, momentum: 0.15, risk: 0.30}
+    moderate:     {sentiment: 0.25, valuation: 0.30, momentum: 0.25, risk: 0.20}
+    aggressive:   {sentiment: 0.35, valuation: 0.20, momentum: 0.30, risk: 0.15}
+  position_limits:
+    conservative: {max_position: 0.05, max_sector: 0.20, min_cash: 0.15, max_stocks: 0.50}
+    moderate:     {max_position: 0.08, max_sector: 0.30, min_cash: 0.10, max_stocks: 0.70}
+    aggressive:   {max_position: 0.12, max_sector: 0.40, min_cash: 0.05, max_stocks: 0.85}
+  geo_targets:
+    conservative: {us: 0.60, intl_developed: 0.30, emerging: 0.10}
+    moderate:     {us: 0.70, intl_developed: 0.20, emerging: 0.10}
+    aggressive:   {us: 0.80, intl_developed: 0.15, emerging: 0.05}
+  scoring:
+    buy_threshold: 65
+    sell_threshold: 35
+    strong_sell_threshold: 20
+    underweight_tolerance: 0.02
+    overweight_tolerance: 0.03
+    cash_deploy_ratio: 0.80
+  rebalance:
+    schedule: "weekly"
+    event_triggers:
+      sentiment_flip_confidence: 0.7
+      drawdown_threshold: 0.10
+      concentration_breach_buffer: 0.05
+  stress_scenarios:
+    recession_2008: -0.38
+    covid_2020: -0.34
+    rate_hike_2022: -0.25
+  stress_thresholds:
+    conservative: {warning: 0.20, action: 0.25}
+    moderate:     {warning: 0.28, action: 0.33}
+    aggressive:   {warning: 0.35, action: 0.40}

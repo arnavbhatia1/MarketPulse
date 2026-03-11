@@ -1,7 +1,94 @@
 """Reusable Plotly chart components for MarketPulse dashboard."""
 
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from .styles import SENTIMENT_COLORS, COLORS
+
+
+# ── Portfolio chart components ───────────────────────────────────────────────
+
+def portfolio_performance_line(snapshots: list, title="Portfolio Performance"):
+    """Cumulative return line chart with SPY benchmark overlay."""
+    if not snapshots:
+        return go.Figure()
+
+    dates = [s["snapshot_date"] for s in reversed(snapshots)]
+    cum_returns = [s.get("cumulative_return", 0) or 0 for s in reversed(snapshots)]
+    bench_returns = [s.get("benchmark_return", 0) or 0 for s in reversed(snapshots)]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=cum_returns, mode="lines",
+        name="Portfolio", line=dict(color=COLORS["primary"], width=2),
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=bench_returns, mode="lines",
+        name="SPY Benchmark", line=dict(color=COLORS["secondary"], width=1, dash="dash"),
+    ))
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", title=title, height=350,
+        margin=dict(t=40, b=30, l=60, r=20),
+        yaxis=dict(tickformat=".1%", gridcolor="#30363D"),
+        xaxis=dict(gridcolor="#30363D"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def allocation_donut(allocation: dict, title="Allocation"):
+    """Donut chart for sector or geographic allocation."""
+    if not allocation:
+        return go.Figure()
+
+    labels = list(allocation.keys())
+    values = [v * 100 for v in allocation.values()]
+
+    fig = go.Figure(data=[go.Pie(
+        labels=labels, values=values, hole=0.5,
+        textinfo="label+percent", textfont_size=11,
+        marker_colors=[
+            COLORS["bullish"], COLORS["primary"], COLORS["bearish"],
+            COLORS["meme"], COLORS["neutral"], COLORS["secondary"],
+            "#7B68EE", "#FF8C00", "#20B2AA", "#DC143C", "#9370DB",
+        ][:len(labels)],
+    )])
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", title=title, height=300,
+        margin=dict(t=40, b=20, l=20, r=20), showlegend=True,
+    )
+    return fig
+
+
+def stress_gauge(score: float, warning_threshold: float, action_threshold: float):
+    """Gauge chart for recession stress score."""
+    color = COLORS["bullish"] if score < warning_threshold else (
+        COLORS["meme"] if score < action_threshold else COLORS["bearish"]
+    )
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=score * 100,
+        title={"text": "Recession Stress Score"},
+        number={"suffix": "%"},
+        gauge={
+            "axis": {"range": [0, 50], "tickcolor": COLORS["secondary"]},
+            "bar": {"color": color},
+            "bgcolor": COLORS["bg_secondary"],
+            "bordercolor": COLORS["border"],
+            "steps": [
+                {"range": [0, warning_threshold * 100], "color": "rgba(0,200,83,0.1)"},
+                {"range": [warning_threshold * 100, action_threshold * 100], "color": "rgba(255,214,0,0.1)"},
+                {"range": [action_threshold * 100, 50], "color": "rgba(255,23,68,0.1)"},
+            ],
+        },
+    ))
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", height=250,
+        margin=dict(t=60, b=20, l=30, r=30),
+    )
+    return fig
 
 
 def sentiment_pie(sentiment_dict, title="Sentiment Distribution"):

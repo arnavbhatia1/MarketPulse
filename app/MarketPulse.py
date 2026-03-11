@@ -27,9 +27,37 @@ st.set_page_config(
 )
 apply_theme()
 
+# ── Auth gate (inline) ──────────────────────────────────────────────────────
+from src.storage.db import init_db
+init_db()
+
+if not st.session_state.get("user_id") and not st.session_state.get("guest"):
+    from app.components.auth_guard import show_login_form
+    user = show_login_form()
+    if user:
+        st.rerun()
+    st.stop()
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.title("MarketPulse")
 st.sidebar.markdown("**Sentiment intelligence for financial markets**")
+
+# Show user info in sidebar
+if st.session_state.get("user_id"):
+    user_email = st.session_state.get("user_email", "User")
+    is_prem = st.session_state.get("is_premium", False)
+    badge = "Premium" if is_prem else "Free"
+    st.sidebar.markdown(f"**{user_email}** · {badge}")
+    if st.sidebar.button("Sign Out", use_container_width=True):
+        for key in ["user_id", "user_email", "is_premium", "guest"]:
+            st.session_state.pop(key, None)
+        st.rerun()
+elif st.session_state.get("guest"):
+    st.sidebar.markdown("*Browsing as guest*")
+    if st.sidebar.button("Sign In", use_container_width=True):
+        st.session_state.pop("guest", None)
+        st.rerun()
+
 st.sidebar.markdown("---")
 
 _today = date.today()
@@ -63,9 +91,6 @@ if st.sidebar.button("Refresh Data", use_container_width=True):
     st.rerun()
 
 # Model status
-from src.storage.db import init_db
-
-init_db()
 model = load_model()
 if model and model.is_trained:
     st.sidebar.success("AI-enhanced analysis active")
@@ -194,24 +219,26 @@ else:
         conf = data.get('avg_confidence', 0.0)
 
         with cols[i % 3]:
-            if st.button(symbol, key=f"ticker_btn_{i}", use_container_width=True):
-                st.session_state["selected_ticker"] = company
-                st.switch_page("pages/1_Ticker_Detail.py")
             safe_sym = html_mod.escape(str(symbol))
             safe_co = html_mod.escape(str(company))
             safe_sent = html_mod.escape(str(sentiment))
-            st.markdown(f"""
-            <div class="ticker-card">
-                <div style="font-size:1.2em; font-weight:bold;">{safe_sym}</div>
-                <div style="color:#8B949E; font-size:0.85em;">{safe_co}</div>
-                <div style="margin:6px 0;">
-                    <span class="sentiment-badge sentiment-badge-{safe_sent}">{safe_sent.upper()}</span>
+            card = st.container(border=True)
+            with card:
+                st.markdown(f"""
+                <div style="cursor:pointer;">
+                    <div style="font-size:1.2em; font-weight:bold;">{safe_sym}</div>
+                    <div style="color:#8B949E; font-size:0.85em;">{safe_co}</div>
+                    <div style="margin:6px 0;">
+                        <span class="sentiment-badge sentiment-badge-{safe_sent}">{safe_sent.upper()}</span>
+                    </div>
+                    <div style="color:#8B949E; font-size:0.8em;">
+                        {mentions} mentions · {conf:.0%} confidence
+                    </div>
                 </div>
-                <div style="color:#8B949E; font-size:0.8em;">
-                    {mentions} mentions · {conf:.0%} confidence
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+                if st.button("View Details", key=f"ticker_btn_{i}", use_container_width=True):
+                    st.session_state["selected_ticker"] = company
+                    st.switch_page("pages/1_Ticker_Detail.py")
 
     # Most mentioned bar chart
     st.markdown("---")

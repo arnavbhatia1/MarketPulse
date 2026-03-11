@@ -125,5 +125,99 @@ def apply_theme():
     .evidence-table tr:nth-child(even) { background: #161B22; }
     .evidence-table tr:nth-child(odd) { background: #0D1117; }
     .evidence-table tr:hover { background: #21262D; }
+
+    /* ── Auth forms ── */
+    .auth-container {
+        max-width: 400px;
+        margin: 80px auto;
+        padding: 32px;
+        background: #161B22;
+        border: 1px solid #30363D;
+        border-radius: 12px;
+    }
+    .auth-title {
+        text-align: center;
+        font-size: 1.8em;
+        font-weight: bold;
+        color: #E6EDF3;
+        margin-bottom: 8px;
+    }
+    .auth-subtitle {
+        text-align: center;
+        color: #8B949E;
+        margin-bottom: 24px;
+    }
+
+    /* ── Portfolio components ── */
+    .portfolio-header {
+        background: #161B22;
+        border: 1px solid #30363D;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 16px;
+    }
+    .portfolio-value {
+        font-size: 2.2em;
+        font-weight: bold;
+        color: #E6EDF3;
+    }
+    .portfolio-change-positive { color: #00C853; font-weight: bold; }
+    .portfolio-change-negative { color: #FF1744; font-weight: bold; }
+    .risk-badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 0.85em;
+        font-weight: bold;
+        text-transform: uppercase;
+    }
+    .risk-badge-conservative {
+        background: rgba(88,166,255,0.15);
+        color: #58A6FF;
+    }
+    .risk-badge-moderate {
+        background: rgba(255,214,0,0.15);
+        color: #FFD600;
+    }
+    .risk-badge-aggressive {
+        background: rgba(255,23,68,0.15);
+        color: #FF1744;
+    }
+    .trade-card {
+        background: #161B22;
+        border: 1px solid #30363D;
+        border-radius: 8px;
+        padding: 16px;
+        margin: 8px 0;
+    }
+    .trade-card-buy { border-left: 4px solid #00C853; }
+    .trade-card-sell { border-left: 4px solid #FF1744; }
+    .bot-commentary {
+        background: #0D1117;
+        border-left: 3px solid #FFD600;
+        padding: 12px 16px;
+        margin: 12px 0;
+        border-radius: 0 6px 6px 0;
+        color: #E6EDF3;
+    }
+    .premium-overlay {
+        text-align: center;
+        padding: 60px 20px;
+        background: #161B22;
+        border: 2px dashed #30363D;
+        border-radius: 12px;
+        margin: 20px 0;
+    }
+    .premium-overlay h3 { color: #FFD600; }
+    .onboarding-card {
+        background: #161B22;
+        border: 1px solid #58A6FF;
+        border-radius: 12px;
+        padding: 32px;
+        text-align: center;
+        margin: 40px auto;
+        max-width: 600px;
+    }
+    .stress-gauge { margin: 8px 0; }
     </style>
     """, unsafe_allow_html=True)
