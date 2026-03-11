@@ -45,28 +45,6 @@ User searches ticker → Claude writes 2-3 sentence verdict → briefing card
 
 **Market grid:** Shows all tracked tickers color-coded by dominant sentiment. Updates after each refresh.
 
-## Project Structure
-
-```
-MarketPulse/
-├── app/
-│   ├── MarketPulse.py          # Home page: search bar + market grid
-│   ├── pipeline_runner.py      # refresh_pipeline(), get_ticker_cache(), load_model()
-│   └── pages/
-│       └── 1_Ticker_Detail.py  # Deep-dive page for a single ticker
-├── src/
-│   ├── ingestion/              # Reddit, Stocktwits, News RSS ingesters
-│   ├── labeling/               # 16 labeling functions + confidence-weighted aggregator
-│   ├── models/                 # TF-IDF + LogReg training pipeline
-│   ├── extraction/             # Ticker entity extraction + normalization
-│   ├── analysis/               # Per-ticker sentiment aggregation
-│   ├── storage/db.py           # SQLite read/write (data/marketpulse.db)
-│   └── agent/briefing.py       # Claude synthesis — one API call per search
-├── scripts/run_pipeline.py     # CLI: full pipeline end-to-end
-├── config/default.yaml         # Data sources, model hyperparameters
-└── tests/                      # 158 tests
-```
-
 ## CLI
 
 ```bash
