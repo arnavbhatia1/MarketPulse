@@ -11,7 +11,17 @@
       "Bash(cd \"C:\\\\Users\\\\abhat\\\\Personal\\\\MarketPulse\" && python -m pytest tests/ -v --tb=short 2>&1 | tail -20)",
       "Bash(python -m pytest tests/ -v 2>&1)",
       "Bash(python -m pytest tests/ -v --tb=short 2>&1 | tail -10)",
-      "Bash(git branch:*)"
+      "Bash(git branch:*)",
+      "Bash(python --version 2>&1; python3 --version 2>&1; where python 2>&1)",
+      "Bash(python -m pytest tests/ --tb=short -q 2>&1 | tail -5)",
+      "Bash(sqlite3 data/marketpulse.db \".schema posts; SELECT COUNT\\(*\\) as post_count FROM posts;\" 2>&1)",
+      "Bash(python3 << 'EOF'\nimport sqlite3\n\ndb_path = \"data/marketpulse.db\"\nconn = sqlite3.connect\\(db_path\\)\ncursor = conn.cursor\\(\\)\n\n# Get schema info\ncursor.execute\\(\"SELECT name FROM sqlite_master WHERE type='table';\"\\)\ntables = cursor.fetchall\\(\\)\nprint\\(\"TABLES:\", [t[0] for t in tables]\\)\n\n# Count rows per table\nfor table_name in [t[0] for t in tables]:\n    cursor.execute\\(f\"SELECT COUNT\\(*\\) FROM {table_name};\"\\)\n    count = cursor.fetchone\\(\\)[0]\n    print\\(f\"  {table_name}: {count} rows\"\\)\n\n# Sample ticker_cache\nprint\\(\"\\\\nTICKER_CACHE sample:\"\\)\ncursor.execute\\(\"SELECT ticker, symbol, mention_count, dominant_sentiment FROM ticker_cache LIMIT 5;\"\\)\nfor row in cursor.fetchall\\(\\):\n    print\\(f\"  {row}\"\\)\n\n# Sample posts\nprint\\(\"\\\\nPOSTS sample \\(first 3\\):\"\\)\ncursor.execute\\(\"SELECT post_id, text[:80], source, sentiment FROM posts LIMIT 3;\"\\)\nfor row in cursor.fetchall\\(\\):\n    print\\(f\"  {row}\"\\)\n\nconn.close\\(\\)\nEOF)",
+      "Bash(cd \"C:/Users/abhat/Personal/MarketPulse\" && pip install yfinance bcrypt 2>&1 | tail -5)",
+      "Bash(cd \"C:/Users/abhat/Personal/MarketPulse\" && python -m pytest tests/ -v --tb=short 2>&1 | tail -30)",
+      "Bash(cd \"C:/Users/abhat/Personal/MarketPulse\" && python -m pytest tests/test_investor.py -v --tb=short 2>&1)",
+      "Bash(cd \"C:/Users/abhat/Personal/MarketPulse\" && python -m pytest tests/ -v --tb=short 2>&1 | tail -15)",
+      "Bash(git commit:*)",
+      "Bash(mkdir -p \"C:\\\\Users\\\\abhat\\\\Personal\\\\FinancialMCP/docs\" && cp \"C:\\\\Users\\\\abhat\\\\Personal\\\\MarketPulse\\\\docs\\\\superpowers\\\\specs\\\\2026-03-11-financial-mcp-design.md\" \"C:\\\\Users\\\\abhat\\\\Personal\\\\FinancialMCP/docs/DESIGN.md\")"
     ]
   }
 }

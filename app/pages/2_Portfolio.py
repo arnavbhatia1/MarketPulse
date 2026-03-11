@@ -50,8 +50,10 @@ if not portfolios:
                                ["conservative", "moderate", "aggressive"],
                                index=1)
     with col3:
-        horizon = st.selectbox("Investment Horizon",
-                              ["1yr", "5yr", "10yr+"], index=1)
+        horizon_labels = {"1yr": "short", "5yr": "medium", "10yr+": "long"}
+        horizon_display = st.selectbox("Investment Horizon",
+                              list(horizon_labels.keys()), index=1)
+        horizon = horizon_labels[horizon_display]
 
     if st.button("Create Portfolio", type="primary", use_container_width=True):
         pid = portfolio_mod.create_user_portfolio(user_id, capital, risk_profile, horizon)
@@ -84,6 +86,7 @@ st.markdown("## Portfolio Dashboard")
 change_class = "portfolio-change-positive" if daily_change >= 0 else "portfolio-change-negative"
 change_sign = "+" if daily_change >= 0 else ""
 risk_badge = port["risk_profile"]
+horizon_display = {"short": "1yr", "medium": "5yr", "long": "10yr+"}.get(port["investment_horizon"], port["investment_horizon"])
 
 st.markdown(f"""
 <div class="portfolio-header">
@@ -95,7 +98,7 @@ st.markdown(f"""
         <div style="text-align:right;">
             <span class="risk-badge risk-badge-{risk_badge}">{risk_badge}</span>
             <div style="color:#8B949E; font-size:0.85em; margin-top:8px;">
-                {port['mode'].title()} · {port['investment_horizon']} horizon
+                {port['mode'].title()} · {horizon_display} horizon
             </div>
         </div>
     </div>
@@ -124,7 +127,7 @@ st.markdown("### Performance")
 snapshots = db.get_snapshots(portfolio_id)
 if snapshots:
     fig = portfolio_performance_line(snapshots)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="perf_line")
 else:
     st.info("Performance data will appear after the first rebalance cycle.")
 
@@ -155,10 +158,10 @@ st.markdown("### Allocation")
 col_sector, col_geo = st.columns(2)
 with col_sector:
     fig = allocation_donut(summary.get("sector_allocation", {}), "Sector Allocation")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="sector_donut")
 with col_geo:
     fig = allocation_donut(summary.get("geo_allocation", {}), "Geographic Allocation")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="geo_donut")
 
 # ── Risk panel ───────────────────────────────────────────────────────────────
 st.markdown("### Risk Assessment")
@@ -174,7 +177,7 @@ thresholds = investor_config.get("stress_thresholds", {}).get(
 col_gauge, col_details = st.columns([1, 1])
 with col_gauge:
     fig = stress_gauge(stress["stress_score"], thresholds["warning"], thresholds["action"])
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="stress_gauge")
 with col_details:
     st.markdown("**Scenario Analysis**")
     for scenario, drawdown in stress.get("scenario_drawdowns", {}).items():
