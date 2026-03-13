@@ -31,7 +31,26 @@
       "Bash(git add:*)",
       "WebSearch",
       "Bash(find /c/Users/abhat/Personal/MarketPulse -path \"*/src/auth*\" -o -path \"*/src/agent*\" -type f 2>/dev/null | grep -E \"\\\\.\\(py|yaml\\)$\")",
-      "Bash(rmdir /c/Users/abhat/Personal/MarketPulse/src/auth/__pycache__ 2>/dev/null; rmdir /c/Users/abhat/Personal/MarketPulse/src/auth/ 2>/dev/null; echo \"Exit code: $?\")"
+      "Bash(rmdir /c/Users/abhat/Personal/MarketPulse/src/auth/__pycache__ 2>/dev/null; rmdir /c/Users/abhat/Personal/MarketPulse/src/auth/ 2>/dev/null; echo \"Exit code: $?\")",
+      "Bash(python -m pytest tests/ -v -x 2>&1 | tail -30)",
+      "Bash(cd \"C:/Users/abhat/Personal/MarketPulse\" && python -c \"import ast; ast.parse\\(open\\('src/investor/mcp_client.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(cd \"C:/Users/abhat/Personal/MarketPulse\" && python -c \"import ast; ast.parse\\(open\\('src/investor/__init__.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(cd C:/Users/abhat/Personal/MarketPulse && python -c \"import app.components.styles; print\\('OK'\\)\")",
+      "Bash(cd C:/Users/abhat/Personal/MarketPulse && python -c \"import app.components.trading_charts; print\\('OK'\\)\")",
+      "Bash(cd C:/Users/abhat/Personal/MarketPulse && python -m pytest tests/test_mcp_client.py -v 2>&1)",
+      "Bash(cd C:/Users/abhat/Personal/MarketPulse && python -m pytest tests/test_trading_bot_page.py -v 2>&1)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/MarketPulse.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(cd C:/Users/abhat/Personal/MarketPulse && python -c \"import ast; ast.parse\\(open\\('app/pages/2_Trading_Bot.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(ls \"C:/Users/abhat/Personal/MarketPulse/src/auth/\" 2>/dev/null; echo \"EXIT:$?\")",
+      "Bash(cd C:/Users/abhat/Personal/MarketPulse && python -m pytest tests/ -v 2>&1 | tail -40)",
+      "Bash(cd C:/Users/abhat/Personal/MarketPulse && python -c \"import ast; ast.parse\\(open\\('src/investor/mcp_client.py'\\).read\\(\\)\\); print\\('OK'\\)\" && python -m pytest tests/test_mcp_client.py tests/test_trading_bot_page.py -v 2>&1 | tail -15)",
+      "Bash(cd C:/Users/abhat/Personal/MarketPulse && python -c \"import ast; ast.parse\\(open\\('src/investor/mcp_client.py'\\).read\\(\\)\\); print\\('OK'\\)\" && python -m pytest tests/test_mcp_client.py -v 2>&1 | tail -10)",
+      "Bash(where financial-mcp:*)",
+      "Bash(while read:*)",
+      "Bash(do echo:*)",
+      "Read(//c/Users/abhat/Personal/MarketPulse/**)",
+      "Bash(done)",
+      "Bash(grep -h \"class=\" C:/Users/abhat/Personal/MarketPulse/app/MarketPulse.py C:/Users/abhat/Personal/MarketPulse/app/pages/*.py | grep -oE 'class=\"[^\"]*\"' | sort | uniq)"
     ]
   }
 }
