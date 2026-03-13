@@ -17,6 +17,11 @@ Posts + per-ticker summaries saved to SQLite (data/marketpulse.db)
         ↓
 Home page grid reads from SQLite (instant)
 User searches ticker → Claude writes 2-3 sentence verdict → briefing card
+        ↓
+MCP Client (src/investor/mcp_client.py) connects to financial-mcp-server via SSE
+        ↓
+Trading Bot page: market regime, ticker analysis, portfolio management
+  (portfolio state lives in data/financial_mcp.db, managed by MCP server)
 ```
 
 ---
@@ -26,13 +31,15 @@ User searches ticker → Claude writes 2-3 sentence verdict → briefing card
 ```
 MarketPulse/
 ├── app/
-│   ├── MarketPulse.py              # Home page: search bar + market grid
+│   ├── MarketPulse.py              # Home page: search bar + market grid + market intel teaser
 │   ├── pipeline_runner.py          # refresh_pipeline(), get_ticker_cache(), load_model()
 │   ├── pages/
-│   │   └── 1_Ticker_Detail.py      # Deep-dive page for a single ticker
+│   │   ├── 1_Ticker_Detail.py      # Deep-dive page for a single ticker
+│   │   └── 2_Trading_Bot.py        # Full trading terminal (market intel + ticker analysis + portfolio)
 │   └── components/
 │       ├── charts.py               # Plotly chart components (pie, bar, trend, probability)
-│       └── styles.py               # Dark theme colors, animations, and CSS
+│       ├── styles.py               # Dark theme colors, animations, and CSS
+│       └── trading_charts.py       # Candlestick, score gauge, stress gauge, CFTC bars, sector bars
 ├── src/
 │   ├── ingestion/
 │   │   ├── base.py                 # Abstract base ingester + REQUIRED_COLUMNS schema
@@ -50,8 +57,10 @@ MarketPulse/
 │   │   └── normalizer.py           # Canonical company name normalization
 │   ├── analysis/
 │   │   └── ticker_sentiment.py     # Per-ticker aggregation from labeled posts
+│   ├── investor/
+│   │   └── mcp_client.py           # MCP client — SSE connection to financial-mcp-server (21 tools)
 │   ├── storage/
-│   │   └── db.py                   # SQLite read/write (data/marketpulse.db)
+│   │   └── db.py                   # SQLite read/write (data/marketpulse.db) — sentiment tables only
 │   ├── agent/
 │   │   └── briefing.py             # Claude synthesis — one API call per search
 │   └── utils/
@@ -64,10 +73,11 @@ MarketPulse/
 │   ├── label.py                    # CLI: label only
 │   └── train.py                    # CLI: train only
 ├── config/
-│   └── default.yaml                # Data sources, model hyperparameters
-├── tests/                          # 166 tests (pytest)
+│   └── default.yaml                # Data sources, model hyperparameters, MCP server config
+├── tests/                          # pytest test suite
 ├── data/
-│   ├── marketpulse.db              # SQLite database (gitignored)
+│   ├── marketpulse.db              # SQLite — sentiment data (gitignored)
+│   ├── financial_mcp.db            # SQLite — portfolio state, managed by MCP server (gitignored)
 │   ├── raw/                        # Raw ingested CSVs (gitignored)
 │   ├── labeled/                    # Labeled CSVs (gitignored)
 │   └── models/                     # Trained model artifacts (gitignored)
@@ -103,11 +113,21 @@ Tries all three sources. Skips sources where `is_available()` is False. Raises `
 ### `src/models/pipeline.py`
 `SentimentPipeline`: TF-IDF (500 features, 1-2 ngrams) + balanced LogReg. `train(texts, labels)` returns a metrics report. `predict(texts)` returns list of `{label, confidence, probabilities}`. `save(dir)` / `load(dir)` persist to `data/models/`.
 
+### `src/investor/mcp_client.py`
+MCP client that connects to `financial-mcp-server` over SSE. Maintains a persistent connection in a background daemon thread. Exposes 21 sync wrapper functions grouped into three categories:
+- **Scoring & Analysis**: `score_ticker`, `scan_universe`, `analyze_ticker`, `get_fundamentals`, `get_momentum`, `get_price`
+- **Portfolio & Trading**: `create_portfolio`, `analyze_portfolio`, `get_holdings`, `get_trades`, `execute_buy`, `execute_sell`, `run_rebalance`, `check_risk`
+- **Market Intelligence**: `detect_market_regime`, `get_vix_analysis`, `scan_anomalies`, `scan_volume_leaders`, `scan_gap_movers`, `get_smart_money_signal`, `get_futures_positioning`
+
+`call_tool(name, timeout, **kwargs)` is the core dispatcher. `is_connected()` checks if the background thread is alive and the SSE session is established.
+
 ### `src/storage/db.py`
-Single SQLite file at `data/marketpulse.db`. Three tables:
+Single SQLite file at `data/marketpulse.db`. Three tables (sentiment data only):
 - `posts` — all ingested posts with sentiment and tickers
 - `ticker_cache` — per-ticker aggregated sentiment (the market grid source)
 - `model_training_log` — model training history
+
+Portfolio state (portfolios, holdings, trades, snapshots) lives in `data/financial_mcp.db`, managed entirely by the `financial-mcp-server`.
 
 ### `src/agent/briefing.py`
 `generate_briefing(company, ticker, ticker_data)` calls `claude-sonnet-4-6` with `max_tokens=150` to write a 2-3 sentence verdict. Returns a static fallback string if `ANTHROPIC_API_KEY` is unset or the call fails.
@@ -121,6 +141,8 @@ Single SQLite file at `data/marketpulse.db`. Three tables:
 ---
 
 ## SQLite Schema
+
+### `data/marketpulse.db` (sentiment data)
 
 ```sql
 posts (
@@ -149,6 +171,10 @@ model_training_log (
 )
 ```
 
+### `data/financial_mcp.db` (portfolio state)
+
+Managed entirely by the `financial-mcp-server`. Contains portfolios, holdings, trades, snapshots, and ETF universe data. MarketPulse does not read or write this database directly -- all access goes through MCP tool calls via `src/investor/mcp_client.py`.
+
 ---
 
 ## Configuration (`config/default.yaml`)
@@ -167,6 +193,11 @@ model:
   ngram_range: [1, 2]
   C: 1.0
   class_weight: "balanced"
+
+mcp_server:
+  url: "http://localhost:8520/sse"
+  timeout: 30
+  rebalance_timeout: 120
 ```
 
 ---
@@ -182,6 +213,8 @@ STOCKTWITS_ACCESS_TOKEN=... # Optional — Stocktwits messages
 
 News is free via RSS — no key needed.
 
+The `financial-mcp-server` must be running on `localhost:8520` (configurable in `config/default.yaml`) for the Trading Bot page to function. The sentiment pipeline and home page work independently of the MCP server.
+
 ---
 
 ## Running Locally
@@ -189,6 +222,7 @@ News is free via RSS — no key needed.
 ```bash
 pip install -r requirements.txt
 cp .env.example .env   # add your keys
+financial-mcp &        # start MCP server (required for Trading Bot page)
 python3 -m streamlit run app/MarketPulse.py
 ```
 
@@ -204,10 +238,11 @@ python3 -m pytest tests/ -v               # run all 166 tests
 
 ## Deployment Notes
 
-- **No external database** — SQLite file at `data/marketpulse.db`. Mount a persistent volume at `/app/data/` in production.
+- **No external database** — SQLite files at `data/marketpulse.db` (sentiment) and `data/financial_mcp.db` (portfolio). Mount a persistent volume at `/app/data/` in production.
 - **No required API keys** — news RSS always provides data. Reddit and Stocktwits are optional.
 - **Model auto-trains** on first Refresh if ≥200 labeled posts are collected. Model lives at `data/models/`.
-- **Port** — Streamlit defaults to 8501. Set with `--server.port` or `STREAMLIT_SERVER_PORT` env var.
+- **MCP server** — the `financial-mcp-server` process must be running for the Trading Bot page. Start with `financial-mcp`. The sentiment pipeline and home page work without it.
+- **Port** — Streamlit defaults to 8501. Set with `--server.port` or `STREAMLIT_SERVER_PORT` env var. MCP server runs on port 8520 by default.
 - **Memory** — peak usage during ingestion is modest (feedparser + sklearn). 512MB RAM is sufficient.
 
 ---
