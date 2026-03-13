@@ -27,43 +27,86 @@ A single file `src/investor/mcp_client.py` replaces all 6 existing investor modu
 
 ### Connection Management
 
-- Uses the `mcp` Python SDK's `ClientSession` over SSE transport
+- Uses the `mcp` Python SDK (`mcp.client.sse.sse_client` + `mcp.client.session.ClientSession`)
 - Connects to `http://localhost:8520/sse` (configurable via `config/default.yaml`)
-- Singleton async client with sync wrappers for Streamlit compatibility
-- Auto-reconnect on connection loss with clear error state for UI
+- Background thread keeps the SSE connection alive for the Streamlit app lifetime
+- Sync wrappers submit tool calls to the background thread via a thread-safe queue
+- Reconnection: on any exception from `call_tool`, tear down the connection and re-establish
 
 ### Client Pattern
 
-```python
-_session: ClientSession | None = None
+The MCP SDK uses async context managers (`sse_client` yields read/write streams, `ClientSession` wraps them). Since Streamlit runs its own event loop, the MCP connection lives in a dedicated background thread running `anyio`.
 
-async def get_session() -> ClientSession:
-    """Connect (or reconnect) to financial-mcp server."""
-    global _session
-    if _session is None or not _session.is_connected:
-        transport = SseTransport(url=config["mcp_server"]["url"])
-        _session = await ClientSession(transport).connect()
-    return _session
+```python
+import json
+import threading
+import queue
+from mcp.client.sse import sse_client
+from mcp.client.session import ClientSession
+
+_call_queue: queue.Queue = queue.Queue()
+_result_queues: dict[int, queue.Queue] = {}
+_thread: threading.Thread | None = None
+_connected = threading.Event()
+
+def _run_mcp_loop(url: str):
+    """Background thread: keeps SSE connection alive, processes tool calls."""
+    import anyio
+
+    async def _loop():
+        async with sse_client(url) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                _connected.set()
+                while True:
+                    call_id, tool_name, kwargs = _call_queue.get()
+                    try:
+                        result = await session.call_tool(tool_name, kwargs)
+                        parsed = json.loads(result.content[0].text)
+                        _result_queues[call_id].put(("ok", parsed))
+                    except Exception as e:
+                        _result_queues[call_id].put(("error", {"error": str(e)}))
+
+    anyio.run(_loop)
+
+def _ensure_connected():
+    """Start background thread if not running."""
+    global _thread
+    if _thread is None or not _thread.is_alive():
+        _connected.clear()
+        url = config["mcp_server"]["url"]
+        _thread = threading.Thread(target=_run_mcp_loop, args=(url,), daemon=True)
+        _thread.start()
+        if not _connected.wait(timeout=config["mcp_server"]["timeout"]):
+            raise ConnectionError("Could not connect to financial-mcp server")
 
 def call_tool(tool_name: str, **kwargs) -> dict:
-    """Sync wrapper — runs async MCP call in event loop."""
-    session = asyncio.run(get_session())
-    result = asyncio.run(session.call_tool(tool_name, kwargs))
-    return json.loads(result.content[0].text)
+    """Sync wrapper — submits tool call to background thread, blocks for result."""
+    _ensure_connected()
+    call_id = id(threading.current_thread())
+    _result_queues[call_id] = queue.Queue()
+    _call_queue.put((call_id, tool_name, kwargs))
+    status, result = _result_queues[call_id].get(timeout=config["mcp_server"]["timeout"])
+    del _result_queues[call_id]
+    if status == "error":
+        return result
+    return result
 ```
+
+**Reconnection strategy:** If the background thread dies (SSE disconnect, server restart), `_ensure_connected()` detects `not _thread.is_alive()` and spawns a new one. Tool calls that were in-flight get an error response.
 
 ### Function Surface
 
 | MCP Client Function | MCP Tool Called | Replaces |
 |---|---|---|
 | `score_ticker(symbol)` | `score_ticker` | `engine.score_ticker()` |
-| `scan_universe(symbols)` | `scan_universe` | `engine.score_universe()` |
+| `scan_universe(symbols: list[str])` | `scan_universe` (joins to comma-separated string) | `engine.score_universe()` |
 | `get_fundamentals(symbol)` | `get_fundamentals` | `market_data.get_fundamentals()` |
 | `get_momentum(symbol)` | `get_momentum` | `market_data.get_momentum_signals()` |
 | `get_price(symbol)` | `get_price` | `market_data.get_current_price()` |
 | `execute_buy(portfolio_id, symbol, shares)` | `execute_buy` | `PaperBroker.execute_buy()` |
 | `execute_sell(portfolio_id, symbol, shares)` | `execute_sell` | `PaperBroker.execute_sell()` |
-| `create_portfolio(capital, risk, horizon, name)` | `create_portfolio` | `portfolio.create_user_portfolio()` |
+| `create_portfolio(capital, risk_profile, investment_horizon, name)` | `create_portfolio` | `portfolio.create_user_portfolio()` |
 | `analyze_portfolio(portfolio_id)` | `analyze_portfolio` | `portfolio.get_portfolio_summary()` |
 | `check_risk(portfolio_id)` | `check_risk` | `risk.compute_stress_score()` |
 | `run_rebalance(portfolio_id, trigger, symbols)` | `run_rebalance` | `rebalancer.run_rebalance()` |
@@ -72,9 +115,9 @@ def call_tool(tool_name: str, **kwargs) -> dict:
 | `analyze_ticker(symbol)` | `analyze_ticker` | (new) |
 | `detect_market_regime()` | `detect_market_regime` | (new) |
 | `get_vix_analysis()` | `get_vix_analysis` | (new) |
-| `scan_anomalies(symbols)` | `scan_anomalies` | (new) |
-| `scan_volume_leaders(symbols)` | `scan_volume_leaders` | (new) |
-| `scan_gap_movers(symbols)` | `scan_gap_movers` | (new) |
+| `scan_anomalies(symbols: list[str])` | `scan_anomalies` (joins to comma-separated string) | (new) |
+| `scan_volume_leaders(symbols: list[str])` | `scan_volume_leaders` (joins to comma-separated string) | (new) |
+| `scan_gap_movers(symbols: list[str])` | `scan_gap_movers` (joins to comma-separated string) | (new) |
 | `get_smart_money_signal(market)` | `get_smart_money_signal` | (new) |
 | `get_futures_positioning(market)` | `get_futures_positioning` | (new) |
 
@@ -135,7 +178,7 @@ If the MCP server isn't running, the lite section gracefully hides with a subtle
 
 ## Section 3: Full Trading Terminal Page
 
-New page `app/pages/4_Trading_Bot.py` — the complete trading experience.
+New page `app/pages/2_Trading_Bot.py` — the complete trading experience.
 
 ### Layout — Three Zones
 
@@ -185,7 +228,7 @@ Shown when a ticker is selected.
 
 ### Bottom Zone — Portfolio Management
 
-- **Portfolio setup:** First-time onboarding — capital slider ($10k-$1M), risk profile radio (conservative/moderate/aggressive), horizon dropdown. Calls `create_portfolio()`.
+- **Portfolio setup:** First-time onboarding — capital slider ($10k-$1M), risk profile radio (`conservative`/`moderate`/`aggressive`), investment horizon dropdown (`short`/`medium`/`long`). Calls `create_portfolio(starting_capital, risk_profile, investment_horizon, name)`.
 - **Portfolio summary:** `analyze_portfolio(portfolio_id)` — total value, daily change, holdings with weights/gains, sector allocation, geo allocation, performance metrics.
 - **Holdings table:** Sortable by symbol, shares, cost basis, current value, gain/loss %, weight, sector.
 - **Rebalance controls:** "Rebalance Now" button → `run_rebalance(portfolio_id)`. Shows results: trades executed, buy/sell signals.
@@ -211,18 +254,19 @@ The MCP server doesn't expose raw OHLC data. For the candlestick chart, call `yf
 | File | Purpose |
 |---|---|
 | `src/investor/mcp_client.py` | MCP client — all tool calls, connection management, sync wrappers |
-| `app/pages/4_Trading_Bot.py` | Full trading terminal page |
+| `app/pages/2_Trading_Bot.py` | Full trading terminal page |
 | `app/components/trading_charts.py` | Candlestick chart, score gauges, stress gauge, CFTC bars, anomaly badge cards |
 
 ### Modified Files
 
 | File | Change |
 |---|---|
-| `app/MarketPulse.py` | Add lite market intelligence section (regime banner, top movers, "powered by" link). Remove auth gate. |
+| `app/MarketPulse.py` | Add lite market intelligence section (regime banner, top movers, "powered by" link). Remove auth gate: delete `show_login_form`/`auth_guard` import, remove login/register form block, remove sidebar user info/sign out block, remove guest mode logic. |
 | `app/components/styles.py` | New CSS for trading terminal cards, regime banner, anomaly badges, score gauges |
-| `config/default.yaml` | Add `mcp_server.url` and `mcp_server.timeout`. Remove `investor:` config section. |
+| `config/default.yaml` | Remove entire `investor:` config block. Add: `mcp_server: { url: "http://localhost:8520/sse", timeout: 30, rebalance_timeout: 120 }` |
 | `src/investor/__init__.py` | Re-export mcp_client functions |
-| `requirements.txt` | Add `financial-mcp-server` as dependency |
+| `requirements.txt` | Add `financial-mcp-server` and `mcp` (client SDK). Remove `bcrypt` (auth removed). |
+| `CLAUDE.md` | Update architecture diagram, project structure, key modules, and SQLite schema sections to reflect MCP integration. Remove investor module descriptions, add MCP client description. Remove auth references. |
 
 ### Deleted Files
 
@@ -236,10 +280,10 @@ The MCP server doesn't expose raw OHLC data. For the candlestick chart, call `yf
 | `src/investor/rebalancer.py` | Replaced by `run_rebalance` MCP tool |
 | `src/auth/auth.py` | No auth — single user |
 | `src/auth/__init__.py` | Package removed |
-| `src/agent/reviewer.py` | No Claude review layer (if exists) |
-| `app/components/auth_guard.py` | No auth (if exists) |
-| `app/pages/2_Portfolio.py` | Consolidated into `4_Trading_Bot.py` |
-| `app/pages/3_Trades.py` | Consolidated into `4_Trading_Bot.py` |
+| `src/agent/reviewer.py` | No Claude review layer |
+| `app/components/auth_guard.py` | No auth |
+| `app/pages/2_Portfolio.py` | Consolidated into `2_Trading_Bot.py` |
+| `app/pages/3_Trades.py` | Consolidated into `2_Trading_Bot.py` |
 | `scripts/rebalance.py` | Rebalance triggered via MCP tool call from UI |
 
 ### Kept Unchanged
@@ -250,12 +294,42 @@ The MCP server doesn't expose raw OHLC data. For the candlestick chart, call `yf
 | `src/ingestion/*` | Sentiment pipeline unchanged |
 | `src/labeling/*` | Labeling unchanged |
 | `src/models/*` | ML pipeline unchanged |
-| `src/storage/db.py` | Still serves sentiment data. Remove portfolio/trades/holdings/users table creation. Keep posts, ticker_cache, model_training_log. |
+| `src/storage/db.py` | Modified — see DB Migration section below |
 | `src/agent/briefing.py` | Claude verdict on ticker search — independent |
 
 ---
 
-## Section 5: Data Flow & Error Handling
+## Section 5: DB Migration
+
+### Changes to `src/storage/db.py`
+
+**Remove from `init_db()`:**
+- `CREATE TABLE IF NOT EXISTS users`
+- `CREATE TABLE IF NOT EXISTS portfolios`
+- `CREATE TABLE IF NOT EXISTS holdings`
+- `CREATE TABLE IF NOT EXISTS trades`
+- `CREATE TABLE IF NOT EXISTS portfolio_snapshots`
+- `CREATE TABLE IF NOT EXISTS etf_universe`
+- `_seed_etf_universe()` call
+- `PRAGMA foreign_keys = ON` (only needed for investor tables)
+
+**Delete these functions from `db.py`:**
+- `create_user()`, `get_user_by_email()`, `get_user_by_id()`
+- `create_portfolio()`, `get_portfolio()`, `update_portfolio()`
+- `get_holdings()`, `upsert_holding()`, `delete_holding()`
+- `save_trade()`, `get_trades()`, `update_trade()`
+- `save_snapshot()`, `get_snapshots()`
+- `get_etf_universe()`, `_seed_etf_universe()`
+
+**Keep:**
+- `init_db()` (with only `posts`, `ticker_cache`, `model_training_log` table creation)
+- All sentiment/ingestion-related functions
+
+**Existing data:** Old tables are left in place (no `DROP TABLE`). They become inert — nothing reads or writes to them. Users can delete `marketpulse.db` and re-run to get a clean schema if desired.
+
+---
+
+## Section 6: Data Flow & Error Handling
 
 ### Startup Sequence
 
@@ -293,6 +367,36 @@ All caching via `@st.cache_data(ttl=...)`.
 - On app load, read from file → `session_state`
 - If file missing → show onboarding setup
 - If portfolio_id exists but MCP server returns error (e.g., DB was wiped) → show onboarding again
+
+---
+
+## Section 7: Testing Strategy
+
+### Deleted Tests
+
+`tests/test_investor.py` — tests the old `src/investor/` modules and `src/auth/` via `db.py` fixtures. Delete entirely since the modules it tests no longer exist.
+
+### New Tests
+
+**`tests/test_mcp_client.py`** — Tests for `src/investor/mcp_client.py`:
+- Mock the MCP server responses (patch `call_tool` to return canned JSON)
+- Test each wrapper function: correct tool name called, correct parameter serialization (list → comma-separated string), correct return type
+- Test error handling: `{"error": "..."}` responses returned correctly
+- Test connection failure: `ConnectionError` raised when server unreachable
+
+**`tests/test_trading_bot_page.py`** — Streamlit page tests:
+- Test portfolio onboarding flow (mock MCP `create_portfolio`)
+- Test that MCP server down shows graceful fallback, not crash
+- Test `portfolio_id` persistence to `data/portfolio_id.txt`
+
+**Integration test (manual / CI optional):**
+- Start `financial-mcp` server
+- Run `create_portfolio` → `run_rebalance` → `get_holdings` → `get_trades` end-to-end
+- Verify portfolio state is consistent
+
+### Existing Tests
+
+All other tests in `tests/` (sentiment, ingestion, labeling, models, storage) remain unchanged. The DB test fixtures should be updated to remove investor-related table assertions if any exist outside `test_investor.py`.
 
 ---
 
