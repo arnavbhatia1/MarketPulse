@@ -9,6 +9,7 @@ parameter for long-running tools like run_rebalance.
 import json
 import itertools
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -36,12 +37,27 @@ def _start_mcp_server():
 
     cmd = shutil.which("financial-mcp")
     if cmd is None:
-        logger.warning("financial-mcp not found on PATH — cannot auto-start server")
-        return
+        # Check Python user Scripts directory (pip install --user)
+        import sysconfig
+        scripts_dir = sysconfig.get_path("scripts", "nt_user")
+        if scripts_dir:
+            candidate = os.path.join(scripts_dir, "financial-mcp.exe")
+            if os.path.isfile(candidate):
+                cmd = candidate
+    if cmd is None:
+        # Last resort: run as a Python module
+        cmd = None  # will use sys.executable below
+        logger.info("financial-mcp not on PATH, falling back to python -m financial_mcp.server")
 
-    logger.info("Auto-starting financial-mcp server...")
+    if cmd:
+        launch_cmd = [cmd]
+    else:
+        import sys
+        launch_cmd = [sys.executable, "-m", "financial_mcp.server"]
+
+    logger.info("Auto-starting financial-mcp server: %s", launch_cmd)
     _server_process = subprocess.Popen(
-        [cmd],
+        launch_cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
