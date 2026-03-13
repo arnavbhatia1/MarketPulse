@@ -1,5 +1,5 @@
 """
-MarketPulse — Financial Sentiment Hub
+MarketPulse -- Financial Sentiment Hub
 
 Run: streamlit run app/MarketPulse.py
 """
@@ -27,37 +27,12 @@ st.set_page_config(
 )
 apply_theme()
 
-# ── Auth gate (inline) ──────────────────────────────────────────────────────
 from src.storage.db import init_db
 init_db()
-
-if not st.session_state.get("user_id") and not st.session_state.get("guest"):
-    from app.components.auth_guard import show_login_form
-    user = show_login_form()
-    if user:
-        st.rerun()
-    st.stop()
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.title("MarketPulse")
 st.sidebar.markdown("**Sentiment intelligence for financial markets**")
-
-# Show user info in sidebar
-if st.session_state.get("user_id"):
-    user_email = st.session_state.get("user_email", "User")
-    is_prem = st.session_state.get("is_premium", False)
-    badge = "Premium" if is_prem else "Free"
-    st.sidebar.markdown(f"**{user_email}** · {badge}")
-    if st.sidebar.button("Sign Out", use_container_width=True):
-        for key in ["user_id", "user_email", "is_premium", "guest"]:
-            st.session_state.pop(key, None)
-        st.rerun()
-elif st.session_state.get("guest"):
-    st.sidebar.markdown("*Browsing as guest*")
-    if st.sidebar.button("Sign In", use_container_width=True):
-        st.session_state.pop("guest", None)
-        st.rerun()
-
 st.sidebar.markdown("---")
 
 _today = date.today()
@@ -86,7 +61,7 @@ if st.sidebar.button("Refresh Data", use_container_width=True):
         )
         posts = source_summary.get('total_posts', 0)
         sources = source_summary.get('sources_used', [])
-        status.update(label=f"Done — {posts} posts from {', '.join(sources)}", state="complete")
+        status.update(label=f"Done -- {posts} posts from {', '.join(sources)}", state="complete")
         st.cache_data.clear()
     st.rerun()
 
@@ -106,6 +81,176 @@ ticker_results = get_ticker_cache()
 st.title("MarketPulse")
 st.markdown("Sentiment intelligence for financial markets.")
 st.markdown("---")
+
+
+# ── Market Intelligence Teaser ───────────────────────────────────────────────
+
+def _merge_movers(anomalies, volume, gaps):
+    """Merge anomaly, volume-leader, and gap-mover scans into a unified list.
+
+    Each result dict uses a different key for its list of items:
+      anomalies -> "anomalies" (items have "symbol", "total_score", "anomalies")
+      volume    -> "leaders"   (items have "symbol", "ratio")
+      gaps      -> "movers"    (items have "symbol", "gap_percent")
+
+    Returns a list sorted by cumulative score descending, each entry:
+      {"symbol": str, "score": float, "badges": [str, ...]}
+    """
+    merged: dict[str, dict] = {}
+
+    for item in (anomalies or {}).get("anomalies", []):
+        sym = item.get("symbol", "")
+        if not sym:
+            continue
+        entry = merged.setdefault(sym, {"symbol": sym, "score": 0.0, "badges": []})
+        entry["score"] += float(item.get("total_score", 0))
+        for a in item.get("anomalies", []):
+            entry["badges"].append(a)
+
+    for item in (volume or {}).get("leaders", []):
+        sym = item.get("symbol", "")
+        if not sym:
+            continue
+        entry = merged.setdefault(sym, {"symbol": sym, "score": 0.0, "badges": []})
+        ratio = float(item.get("ratio", 0))
+        entry["score"] += ratio
+        entry["badges"].append(f"Vol {ratio:.1f}x")
+
+    for item in (gaps or {}).get("movers", []):
+        sym = item.get("symbol", "")
+        if not sym:
+            continue
+        entry = merged.setdefault(sym, {"symbol": sym, "score": 0.0, "badges": []})
+        gap = float(item.get("gap_percent", 0))
+        entry["score"] += abs(gap)
+        direction = "up" if gap >= 0 else "down"
+        entry["badges"].append(f"Gap {direction} {abs(gap):.1f}%")
+
+    return sorted(merged.values(), key=lambda x: x["score"], reverse=True)
+
+
+try:
+    from src.investor.mcp_client import (
+        is_connected,
+        detect_market_regime,
+        get_vix_analysis,
+        scan_anomalies,
+        scan_volume_leaders,
+        scan_gap_movers,
+    )
+    _HAS_MCP = True
+except Exception:
+    _HAS_MCP = False
+
+if _HAS_MCP:
+    try:
+        if is_connected():
+            # -- Cached data fetchers ------------------------------------------
+            @st.cache_data(ttl=300)
+            def _fetch_regime():
+                regime = detect_market_regime()
+                vix = get_vix_analysis()
+                return regime, vix
+
+            @st.cache_data(ttl=120)
+            def _fetch_movers():
+                anomalies = scan_anomalies()
+                volume = scan_volume_leaders()
+                gaps = scan_gap_movers()
+                return _merge_movers(anomalies, volume, gaps)
+
+            regime_data, vix_data = _fetch_regime()
+            movers = _fetch_movers()
+
+            # -- Market Regime Banner ------------------------------------------
+            regime_name = regime_data.get("regime", "unknown").lower()
+            regime_css = {
+                "bull": "regime-bull",
+                "bear": "regime-bear",
+                "sideways": "regime-sideways",
+                "volatile": "regime-volatile",
+                "crash": "regime-crash",
+            }.get(regime_name, "regime-sideways")
+            recommendation = html_mod.escape(
+                str(regime_data.get("recommendation", ""))
+            )
+
+            vix_level = vix_data.get("level", "normal").lower()
+            vix_value = vix_data.get("value", "")
+            vix_css = {
+                "low": "vix-low",
+                "normal": "vix-normal",
+                "high": "vix-high",
+            }.get(vix_level, "vix-normal")
+
+            st.markdown(f"""
+            <div class="regime-banner">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                    <span class="regime-label {regime_css}">{html_mod.escape(regime_name.upper())}</span>
+                    <span class="vix-badge {vix_css}">VIX {html_mod.escape(str(vix_value))}</span>
+                </div>
+                <div style="color:#8B949E; font-size:0.9rem; margin-top:0.5rem;">
+                    {recommendation}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # -- Top Movers Grid -----------------------------------------------
+            if movers:
+                top6 = movers[:6]
+                cols = st.columns(3)
+                for idx, mover in enumerate(top6):
+                    sym = html_mod.escape(str(mover["symbol"]))
+                    score = mover["score"]
+                    badges_html = ""
+                    for badge_text in mover["badges"][:3]:
+                        safe_badge = html_mod.escape(str(badge_text))
+                        # Pick badge CSS class based on content keywords
+                        if "gap" in badge_text.lower() and "down" in badge_text.lower():
+                            bcls = "badge-gap-down"
+                        elif "gap" in badge_text.lower():
+                            bcls = "badge-gap-up"
+                        elif "vol" in badge_text.lower():
+                            bcls = "badge-volume-spike"
+                        elif "52w" in badge_text.lower() or "high" in badge_text.lower():
+                            bcls = "badge-52w-high"
+                        else:
+                            bcls = "badge-volume-spike"
+                        badges_html += f'<span class="anomaly-badge {bcls}">{safe_badge}</span>'
+
+                    change_cls = "mover-change-pos" if score >= 0 else "mover-change-neg"
+
+                    with cols[idx % 3]:
+                        st.markdown(f"""
+                        <div class="mover-card">
+                            <div class="mover-symbol">{sym}</div>
+                            <div class="{change_cls}" style="margin:0.3rem 0;">
+                                Score: {score:.1f}
+                            </div>
+                            <div>{badges_html}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+            # -- Powered by badge ----------------------------------------------
+            st.markdown("""
+            <div class="powered-badge">
+                Powered by <a href="/Investor_Bot">financial-mcp</a>
+            </div>
+            """, unsafe_allow_html=True)
+
+        else:
+            st.markdown(
+                '<div class="mcp-unavailable">Market intelligence unavailable -- MCP server not connected</div>',
+                unsafe_allow_html=True,
+            )
+    except Exception:
+        st.markdown(
+            '<div class="mcp-unavailable">Market intelligence unavailable</div>',
+            unsafe_allow_html=True,
+        )
+
+st.markdown("---")
+
 
 # ── Search bar (PRIMARY) ──────────────────────────────────────────────────────
 col_input, col_btn = st.columns([5, 1])
@@ -139,7 +284,7 @@ if search_clicked and query.strip():
                 break
 
     if not ticker_data:
-        st.warning(f"No data for **{query.strip()}**. Try a ticker symbol like TSLA, NVDA, or AAPL — then hit **Refresh Data** if needed.")
+        st.warning(f"No data for **{query.strip()}**. Try a ticker symbol like TSLA, NVDA, or AAPL -- then hit **Refresh Data** if needed.")
     else:
         symbol = ticker_data.get('symbol', resolved.upper())
         dominant = ticker_data.get('dominant_sentiment', 'neutral')
@@ -161,7 +306,7 @@ if search_clicked and query.strip():
                 <span class="sentiment-badge sentiment-badge-{safe_dominant}">{safe_dominant.upper()}</span>
             </div>
             <div style="color:#8B949E; font-size:0.85em; margin-top:4px;">
-                {mention_count} mentions · updated {safe_updated}
+                {mention_count} mentions -- updated {safe_updated}
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -170,7 +315,7 @@ if search_clicked and query.strip():
         st.markdown("#### AI Verdict")
         with st.spinner("Generating verdict..."):
             verdict = generate_briefing(resolved, symbol, ticker_data)
-        st.markdown(f'<div class="briefing-verdict">"{html_mod.escape(str(verdict))}"<br><small style="color:#8B949E;">— MarketPulse AI</small></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="briefing-verdict">"{html_mod.escape(str(verdict))}"<br><small style="color:#8B949E;">-- MarketPulse AI</small></div>', unsafe_allow_html=True)
 
         # Sentiment trend chart
         by_day = ticker_data.get('sentiment_by_day', {})
@@ -210,7 +355,7 @@ if not ticker_results:
 else:
     st.markdown("### Market Overview")
 
-    # Ticker card grid — clickable buttons with styled cards
+    # Ticker card grid -- clickable buttons with styled cards
     cols = st.columns(3)
     for i, (company, data) in enumerate(ticker_results.items()):
         sentiment = data.get('dominant_sentiment', 'neutral')
@@ -232,7 +377,7 @@ else:
                         <span class="sentiment-badge sentiment-badge-{safe_sent}">{safe_sent.upper()}</span>
                     </div>
                     <div style="color:#8B949E; font-size:0.8em;">
-                        {mentions} mentions · {conf:.0%} confidence
+                        {mentions} mentions -- {conf:.0%} confidence
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
