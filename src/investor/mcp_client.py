@@ -9,8 +9,11 @@ parameter for long-running tools like run_rebalance.
 import json
 import itertools
 import logging
+import shutil
+import subprocess
 import threading
 import queue
+import time
 
 from src.utils.config import load_config
 
@@ -22,6 +25,28 @@ _result_queues: dict[int, queue.Queue] = {}
 _call_counter = itertools.count()
 _thread: threading.Thread | None = None
 _connected = threading.Event()
+_server_process: subprocess.Popen | None = None
+
+
+def _start_mcp_server():
+    """Launch financial-mcp server as a background subprocess if not already running."""
+    global _server_process
+    if _server_process is not None and _server_process.poll() is None:
+        return  # already running
+
+    cmd = shutil.which("financial-mcp")
+    if cmd is None:
+        logger.warning("financial-mcp not found on PATH — cannot auto-start server")
+        return
+
+    logger.info("Auto-starting financial-mcp server...")
+    _server_process = subprocess.Popen(
+        [cmd],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    # Give the server a moment to bind its port
+    time.sleep(2)
 
 
 def _run_mcp_loop(url: str):
@@ -51,9 +76,10 @@ def _run_mcp_loop(url: str):
 
 
 def _ensure_connected():
-    """Start background thread if not running."""
+    """Start MCP server if needed, then connect via background thread."""
     global _thread
     if _thread is None or not _thread.is_alive():
+        _start_mcp_server()
         _connected.clear()
         url = _config["mcp_server"]["url"]
         _thread = threading.Thread(target=_run_mcp_loop, args=(url,), daemon=True)
