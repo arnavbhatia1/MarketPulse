@@ -45,8 +45,21 @@ def _start_mcp_server():
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    # Give the server a moment to bind its port
-    time.sleep(2)
+    # Wait for the server to bind its port
+    for _ in range(10):
+        time.sleep(1)
+        if _server_process.poll() is not None:
+            logger.error("financial-mcp server exited with code %s", _server_process.returncode)
+            _server_process = None
+            return
+        # Try a quick HTTP check to see if the server is up
+        try:
+            import urllib.request
+            urllib.request.urlopen(_config["mcp_server"]["url"].replace("/sse", ""), timeout=1)
+            break
+        except Exception:
+            continue
+    logger.info("financial-mcp server started (pid=%s)", _server_process.pid)
 
 
 def _run_mcp_loop(url: str):
@@ -106,8 +119,14 @@ def call_tool(tool_name: str, timeout: float | None = None, **kwargs) -> dict:
 
 
 def is_connected() -> bool:
-    """Check if MCP server connection is alive."""
-    return _thread is not None and _thread.is_alive() and _connected.is_set()
+    """Check if MCP server connection is alive. Attempts to connect if not yet connected."""
+    if _thread is not None and _thread.is_alive() and _connected.is_set():
+        return True
+    try:
+        _ensure_connected()
+        return True
+    except ConnectionError:
+        return False
 
 
 # -- Scoring & Analysis --------------------------------------------------------

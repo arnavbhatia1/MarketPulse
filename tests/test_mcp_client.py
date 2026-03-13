@@ -145,6 +145,8 @@ class TestErrorHandling:
         assert "error" in result
         assert result["error"] == "Symbol not found"
 
-    def test_is_connected_returns_bool(self):
+    @patch("src.investor.mcp_client._ensure_connected", side_effect=ConnectionError("no server"))
+    def test_is_connected_false_without_server(self, mock):
         from src.investor.mcp_client import is_connected
-        assert isinstance(is_connected(), bool)
+        result = is_connected()
+        assert result is False
