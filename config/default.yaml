@@ -7,7 +7,6 @@ data:
   storage:
     raw_dir: "data/raw"
     labeled_dir: "data/labeled"
-    gold_dir: "data/gold"
     model_dir: "data/models"
 
 ingestion:
@@ -48,13 +47,6 @@ model:
   class_weight: "balanced"
   test_size: 0.2
   random_state: 42
-
-evaluation:
-  gold_set_size: 100
-
-dashboard:
-  theme: "dark"
-  port: 8501
 
 mcp_server:
   url: "http://localhost:8520/sse"

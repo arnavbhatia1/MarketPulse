@@ -32,22 +32,6 @@ def apply_theme():
     import streamlit as st
     st.markdown("""
     <style>
-    .ticker-card {
-        background: #161B22;
-        border: 1px solid #30363D;
-        border-radius: 8px;
-        padding: 16px;
-        margin: 8px 0;
-        color: #E6EDF3;
-        transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
-        cursor: pointer;
-    }
-    .ticker-card:hover {
-        border-color: #58A6FF;
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(88, 166, 255, 0.15);
-    }
-    .ticker-card div { color: #E6EDF3; }
     .sentiment-badge {
         display: inline-block;
         padding: 4px 12px;
@@ -72,10 +56,6 @@ def apply_theme():
         background: rgba(255,214,0,0.15);
         color: #FFD600;
     }
-    .sentiment-bullish { color: #00C853 !important; font-weight: bold; }
-    .sentiment-bearish { color: #FF1744 !important; font-weight: bold; }
-    .sentiment-neutral { color: #78909C !important; font-weight: bold; }
-    .sentiment-meme { color: #FFD600 !important; font-weight: bold; }
     .briefing-card {
         background: #161B22;
         border: 1px solid #30363D;
@@ -158,7 +138,6 @@ def apply_theme():
     .mover-card { background: #161B22; border: 1px solid #30363D; border-radius: 10px; padding: 1rem; text-align: center; transition: border-color 0.2s; }
     .mover-card:hover { border-color: #58A6FF; }
     .mover-symbol { font-size: 1.1rem; font-weight: 700; color: #E6EDF3; }
-    .mover-price { font-size: 0.95rem; color: #8B949E; }
     .mover-change-pos { color: #00C853; font-weight: 600; }
     .mover-change-neg { color: #FF1744; font-weight: 600; }
 
@@ -172,12 +151,6 @@ def apply_theme():
 
     /* ── Smart Money Card ── */
     .smart-money-card { background: #161B22; border: 1px solid #30363D; border-radius: 12px; padding: 1.2rem; }
-
-    /* ── Portfolio Section ── */
-    .portfolio-value { font-size: 2rem; font-weight: 700; color: #E6EDF3; }
-    .portfolio-change-pos { color: #00C853; }
-    .portfolio-change-neg { color: #FF1744; }
-    .portfolio-stat { font-size: 0.85rem; color: #8B949E; }
 
     /* ── Powered By Badge ── */
     .powered-badge { text-align: center; padding: 0.8rem; color: #8B949E; font-size: 0.85rem; }
