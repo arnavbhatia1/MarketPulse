@@ -21,7 +21,6 @@ apply_theme()
 try:
     from src.investor import (
         is_connected, detect_market_regime, get_vix_analysis,
-        scan_anomalies, scan_volume_leaders, scan_gap_movers,
         analyze_ticker, get_fundamentals, get_momentum, score_ticker,
         get_smart_money_signal, get_futures_positioning,
     )
@@ -48,10 +47,6 @@ st.caption("Powered by financial-mcp")
 @st.cache_data(ttl=300)
 def _cached_regime():
     return detect_market_regime(), get_vix_analysis()
-
-@st.cache_data(ttl=120)
-def _cached_movers():
-    return scan_anomalies(), scan_volume_leaders(), scan_gap_movers()
 
 regime_data, vix_data = _cached_regime()
 
@@ -85,47 +80,6 @@ with col_vix:
             <div class="vix-badge {vix_css}" style="font-size:1.2rem">VIX: {vix}</div>
             <div style="color:#8B949E;font-size:0.8rem;margin-top:0.3rem">{signal.title()} &middot; {pct_display}</div>
         </div>''', unsafe_allow_html=True)
-
-# Top Movers
-anomalies, volume, gaps = _cached_movers()
-movers = {}
-if "error" not in anomalies:
-    for item in anomalies.get("anomalies", []):
-        sym = item["symbol"]
-        movers[sym] = movers.get(sym, {"symbol": sym, "badges": [], "score": 0})
-        movers[sym]["score"] += item.get("total_score", 0)
-        for a in item.get("anomalies", []):
-            movers[sym]["badges"].append(a["type"])
-if "error" not in volume:
-    for item in volume.get("leaders", []):
-        sym = item["symbol"]
-        movers[sym] = movers.get(sym, {"symbol": sym, "badges": [], "score": 0})
-        movers[sym]["score"] += item.get("ratio", 0)
-        movers[sym]["badges"].append("volume_spike")
-if "error" not in gaps:
-    for item in gaps.get("movers", []):
-        sym = item["symbol"]
-        movers[sym] = movers.get(sym, {"symbol": sym, "badges": [], "score": 0})
-        movers[sym].setdefault("change_pct", item.get("gap_percent", 0))
-        movers[sym]["badges"].append("gap_up" if item.get("gap_percent", 0) > 0 else "gap_down")
-
-sorted_movers = sorted(movers.values(), key=lambda m: m["score"], reverse=True)[:6]
-if sorted_movers:
-    st.markdown("#### Top Movers")
-    mover_cols = st.columns(3)
-    for i, m in enumerate(sorted_movers):
-        with mover_cols[i % 3]:
-            cp = m.get("change_pct", 0)
-            change_css = "mover-change-pos" if cp >= 0 else "mover-change-neg"
-            badges = " ".join(
-                f'<span class="anomaly-badge badge-{b.replace("_", "-")}">{b.replace("_", " ").title()}</span>'
-                for b in m.get("badges", [])[:2]
-            )
-            st.markdown(f'''<div class="mover-card">
-                <div class="mover-symbol">{m["symbol"]}</div>
-                <div class="{change_css}">{cp:+.1f}%</div>
-                <div>{badges}</div>
-            </div>''', unsafe_allow_html=True)
 
 st.divider()
 
