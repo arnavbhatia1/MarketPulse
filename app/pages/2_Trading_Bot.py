@@ -245,52 +245,58 @@ if selected_ticker:
 
 
 # ==============================================================================
-# ZONE 3: BOT CONTROL (live-updating fragment — no full-page flicker)
+# ZONE 3: BOT CONTROL (entire zone is a live fragment — updates every second)
 # ==============================================================================
 
 st.divider()
 st.markdown("#### Bot Control")
 
-# Start/Stop buttons live outside the fragment so they don't flicker
-_bot_state = _get_bot_state()
-_engine = _get_engine()
 
-col_btn, col_status, col_timer = st.columns([1, 1, 2])
-
-with col_btn:
-    if _bot_state.is_running:
-        if st.button("Stop Bot", type="secondary", key="bot_stop"):
-            _engine.stop()
-            st.rerun()
-    else:
-        if st.button("Start Bot", type="primary", key="bot_start"):
-            _engine.start()
-            st.rerun()
-
-with col_status:
-    if _bot_state.is_running:
-        st.markdown(
-            '<span style="color:#00C853;font-weight:700;font-size:1rem">● RUNNING</span>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            '<span style="color:#8B949E;font-weight:700;font-size:1rem">● STOPPED</span>',
-            unsafe_allow_html=True,
-        )
-
-with col_timer:
-    if _bot_state.is_running:
-        last = _bot_state.last_cycle_time
-        elapsed = f"{(datetime.now() - last).seconds}s ago" if last else "starting..."
-        st.caption(f"Running continuously · Cycle #{_bot_state.cycle_count} · Last: {elapsed}")
-
-
-@st.fragment(run_every=2)
+@st.fragment(run_every=1)
 def _bot_live_panel():
-    """Live-updating panel — only this fragment re-renders every 2s."""
+    """Entire bot control panel re-renders every 1 second for live counters."""
     state = _get_bot_state()
+    engine = _get_engine()
 
+    # -- Start / Stop + Status + Live Timer --------------------------------
+    col_btn, col_status, col_timer = st.columns([1, 1, 2])
+
+    with col_btn:
+        if state.is_running:
+            if st.button("Stop Bot", type="secondary", key="bot_stop"):
+                engine.stop()
+                st.rerun()
+        else:
+            if st.button("Start Bot", type="primary", key="bot_start"):
+                engine.start()
+                st.rerun()
+
+    with col_status:
+        if state.is_running:
+            st.markdown(
+                '<span style="color:#00C853;font-weight:700;font-size:1rem">● RUNNING</span>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<span style="color:#8B949E;font-weight:700;font-size:1rem">● STOPPED</span>',
+                unsafe_allow_html=True,
+            )
+
+    with col_timer:
+        if state.is_running and state.last_cycle_time:
+            elapsed = int((datetime.now() - state.last_cycle_time).total_seconds())
+            st.markdown(
+                f'<span style="font-size:0.85rem;color:#8B949E;">'
+                f'Cycle <b style="color:#E6EDF3;">#{state.cycle_count}</b>'
+                f' &nbsp;·&nbsp; Last scan <b style="color:#E6EDF3;">{elapsed}s</b> ago'
+                f'</span>',
+                unsafe_allow_html=True,
+            )
+        elif state.is_running:
+            st.caption("Starting...")
+
+    # -- Portfolio metrics + positions + log --------------------------------
     if state.portfolio_id:
         col_pv, col_pnl, col_npos = st.columns(3)
         with col_pv:
