@@ -20,4 +20,5 @@ venv/
 .vscode/
 .idea/
 .streamlit
-docs/build
+docs/
+.claude/
