@@ -14,7 +14,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from src.investor.mcp_client import (
@@ -120,7 +120,13 @@ class BotEngine:
         self._stop_event = threading.Event()
 
     def start(self) -> None:
-        """Start the bot. Creates ScalpBot portfolio on first run."""
+        """Start the bot. Creates ScalpBot portfolio on first run.
+
+        Note: there is a benign TOCTOU between the is_running guard and the
+        portfolio-creation MCP call. In practice, this is single-threaded
+        (Streamlit's one render thread triggers start()), so double-start is
+        not a real risk.
+        """
         with _lock:
             if _state.is_running:
                 return
@@ -162,8 +168,6 @@ class BotEngine:
         )
 
     def _loop(self) -> None:
-        from datetime import timedelta
-
         # Capture portfolio_id once under lock before the loop begins.
         # portfolio_id is only set in start() before this thread is created,
         # so it's safe to read once and reuse for all cycles.

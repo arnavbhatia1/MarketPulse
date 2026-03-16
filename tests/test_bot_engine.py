@@ -79,6 +79,7 @@ def _reset_state():
     bot_engine._state.pending_sells = set()
     bot_engine._state.trade_log = []
     bot_engine._engine._stop_event.set()
+    bot_engine._engine._thread = None
 
 
 class TestBotEngine:
@@ -86,9 +87,13 @@ class TestBotEngine:
         _reset_state()
 
     def teardown_method(self):
-        from src.investor.bot_engine import get_engine
-        get_engine().stop()
-        _time.sleep(0.1)
+        from src.investor import bot_engine
+        bot_engine.get_engine().stop()
+        # Wait for loop thread to exit (up to 2s) rather than a fixed sleep
+        t = bot_engine._engine._thread
+        if t is not None:
+            t.join(timeout=2.0)
+        bot_engine._engine._thread = None
 
     def test_get_engine_returns_same_instance(self):
         from src.investor.bot_engine import get_engine
