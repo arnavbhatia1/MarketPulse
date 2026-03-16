@@ -381,9 +381,6 @@ else:
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
-                if st.button("View Details", key=f"ticker_btn_{i}", width="stretch"):
-                    st.session_state["selected_ticker"] = company
-                    st.switch_page("pages/1_Ticker_Detail.py")
 
     # Most mentioned bar chart
     st.markdown("---")

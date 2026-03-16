@@ -1,10 +1,7 @@
 """Trading Bot — Full trading terminal powered by financial-mcp-server."""
 
-import time as _time
-
 import streamlit as st
 import pandas as pd
-from pathlib import Path
 from datetime import datetime
 
 from src.investor.bot_engine import (
@@ -18,28 +15,6 @@ st.set_page_config(page_title="Trading Bot", page_icon="\U0001F4C8", layout="wid
 from app.components.styles import apply_theme
 apply_theme()
 
-DATA_DIR = Path("data")
-PORTFOLIO_FILE = DATA_DIR / "portfolio_id.txt"
-
-
-# -- Portfolio Persistence -----------------------------------------------------
-
-def _load_portfolio_id() -> str | None:
-    if "portfolio_id" in st.session_state:
-        return st.session_state["portfolio_id"]
-    if PORTFOLIO_FILE.exists():
-        pid = PORTFOLIO_FILE.read_text().strip()
-        if pid:
-            st.session_state["portfolio_id"] = pid
-            return pid
-    return None
-
-
-def _save_portfolio_id(pid: str):
-    DATA_DIR.mkdir(exist_ok=True)
-    PORTFOLIO_FILE.write_text(pid)
-    st.session_state["portfolio_id"] = pid
-
 
 # -- MCP Connection Check -----------------------------------------------------
 
@@ -49,8 +24,6 @@ try:
         scan_anomalies, scan_volume_leaders, scan_gap_movers,
         analyze_ticker, get_fundamentals, get_momentum, score_ticker,
         get_smart_money_signal, get_futures_positioning,
-        create_portfolio, analyze_portfolio, get_holdings, get_trades,
-        run_rebalance, check_risk,
     )
     mcp_available = is_connected()
 except (ConnectionError, Exception):
@@ -272,129 +245,16 @@ if selected_ticker:
 
 
 # ==============================================================================
-# ZONE 3: PORTFOLIO MANAGEMENT
-# ==============================================================================
-
-st.markdown("#### Portfolio")
-
-portfolio_id = _load_portfolio_id()
-
-if portfolio_id is None:
-    # Onboarding
-    st.markdown("**Set up your portfolio to start trading**")
-    with st.form("portfolio_setup"):
-        name = st.text_input("Portfolio name", value="My Portfolio")
-        capital = st.slider("Starting capital ($)", 10000, 1000000, 100000, step=10000)
-        risk = st.radio("Risk profile", ["conservative", "moderate", "aggressive"], index=1)
-        horizon = st.selectbox("Investment horizon", ["short", "medium", "long"], index=1)
-        submitted = st.form_submit_button("Create Portfolio")
-        if submitted:
-            result = create_portfolio(float(capital), risk, horizon, name)
-            if "error" not in result:
-                _save_portfolio_id(result["portfolio_id"])
-                st.success(f"Portfolio created! ID: {result['portfolio_id']}")
-                st.rerun()
-            else:
-                st.error(f"Failed: {result['error']}")
-else:
-    summary = analyze_portfolio(portfolio_id)
-    if "error" in summary:
-        st.warning("Portfolio not found on MCP server. Create a new one?")
-        if st.button("Reset Portfolio"):
-            PORTFOLIO_FILE.unlink(missing_ok=True)
-            st.session_state.pop("portfolio_id", None)
-            st.rerun()
-    else:
-        # Header metrics
-        col_val, col_change, col_cash, col_rebal = st.columns(4)
-        total_value = summary.get("total_value", 0)
-        daily_change = summary.get("daily_change", 0)
-        daily_pct = summary.get("daily_change_pct", 0)
-        portfolio_info = summary.get("portfolio", {})
-        cash = portfolio_info.get("current_cash", 0)
-
-        with col_val:
-            st.metric("Portfolio Value", f"${total_value:,.2f}")
-        with col_change:
-            st.metric("Daily Change", f"${daily_change:,.2f}", f"{daily_pct:+.2f}%")
-        with col_cash:
-            st.metric("Cash", f"${cash:,.2f}")
-        with col_rebal:
-            if st.button("Rebalance Now"):
-                with st.spinner("Rebalancing..."):
-                    rebal_result = run_rebalance(portfolio_id, trigger="manual")
-                    if "error" not in rebal_result:
-                        buys = rebal_result.get("buy_signals", 0)
-                        sells = rebal_result.get("sell_signals", 0)
-                        st.success(f"Rebalance complete: {buys} buys, {sells} sells")
-                        st.rerun()
-                    else:
-                        st.error(f"Rebalance failed: {rebal_result.get('error')}")
-
-        # Holdings table
-        holdings_data = get_holdings(portfolio_id)
-        if "error" not in holdings_data and holdings_data.get("holdings"):
-            st.markdown("##### Holdings")
-            df = pd.DataFrame(holdings_data["holdings"])
-            display_cols = [c for c in ["symbol", "shares", "avg_cost_basis", "asset_type", "sector", "company_name"] if c in df.columns]
-            st.dataframe(df[display_cols], width="stretch", hide_index=True)
-
-        # Trade history
-        trades_data = get_trades(portfolio_id)
-        if "error" not in trades_data and trades_data.get("trades"):
-            st.markdown("##### Trade History")
-            with st.expander(f"Show trades ({trades_data.get('count', 0)})"):
-                trades_df = pd.DataFrame(trades_data["trades"])
-                display_cols = [c for c in ["symbol", "action", "shares", "price", "total_value", "status", "executed_at"] if c in trades_df.columns]
-                st.dataframe(trades_df[display_cols], width="stretch", hide_index=True)
-
-        # Risk assessment
-        risk_data = check_risk(portfolio_id)
-        if "error" not in risk_data:
-            st.markdown("##### Risk Assessment")
-            col_stress, col_sectors = st.columns(2)
-            with col_stress:
-                stress = risk_data.get("stress", {})
-                scenarios = stress.get("scenario_drawdowns", {})
-                if scenarios:
-                    st.plotly_chart(
-                        stress_gauge(stress.get("stress_score", 0), scenarios),
-                        width="stretch",
-                    )
-            with col_sectors:
-                sector_alloc = risk_data.get("sector_allocation", {})
-                if sector_alloc:
-                    st.plotly_chart(
-                        sector_allocation_bars(sector_alloc),
-                        width="stretch",
-                    )
-
-        # Performance metrics
-        perf = summary.get("performance", {})
-        if perf:
-            st.markdown("##### Performance")
-            perf_cols = st.columns(4)
-            with perf_cols[0]:
-                st.metric("Cumulative Return", f"{perf.get('cumulative_return', 0) * 100:.2f}%")
-            with perf_cols[1]:
-                st.metric("Sharpe Ratio", f"{perf.get('sharpe_ratio', 0):.2f}")
-            with perf_cols[2]:
-                st.metric("Max Drawdown", f"{perf.get('max_drawdown', 0) * 100:.2f}%")
-            with perf_cols[3]:
-                st.metric("Daily Return", f"{perf.get('daily_return', 0) * 100:.2f}%")
-
-
-# ==============================================================================
-# ZONE 4: BOT CONTROL
+# ZONE 3: BOT CONTROL (live-updating fragment — no full-page flicker)
 # ==============================================================================
 
 st.divider()
 st.markdown("#### Bot Control")
 
+# Start/Stop buttons live outside the fragment so they don't flicker
 _bot_state = _get_bot_state()
 _engine = _get_engine()
 
-# -- Start / Stop + Status row ------------------------------------------------
 col_btn, col_status, col_timer = st.columns([1, 1, 2])
 
 with col_btn:
@@ -425,60 +285,66 @@ with col_timer:
         elapsed = f"{(datetime.now() - last).seconds}s ago" if last else "starting..."
         st.caption(f"Running continuously · Cycle #{_bot_state.cycle_count} · Last: {elapsed}")
 
-# -- Portfolio metrics --------------------------------------------------------
-if _bot_state.portfolio_id:
-    col_pv, col_pnl, col_npos = st.columns(3)
-    with col_pv:
-        st.metric("Portfolio Value", f"${_bot_state.portfolio_value:,.2f}")
-    with col_pnl:
-        pnl = _bot_state.total_pnl
-        st.metric("Total P&L", f"${pnl:+,.2f}")
-    with col_npos:
-        st.metric("Open Positions", f"{len(_bot_state.open_positions)} / {MAX_POSITIONS}")
 
-    # -- Open positions table -------------------------------------------------
-    if _bot_state.open_positions:
-        st.markdown("##### Open Positions")
-        rows = []
-        for ticker, pos in _bot_state.open_positions.items():
-            entry = pos["entry_price"]
-            current = pos.get("current_price", entry)
-            pnl_pct = (current - entry) / entry * 100 if entry > 0 else 0
-            pnl_amt = (current - entry) * pos["shares"]
-            rows.append({
-                "Ticker": ticker,
-                "Entry": f"${entry:.2f}",
-                "Current": f"${current:.2f}",
-                "P&L %": f"{pnl_pct:+.2f}%",
-                "P&L $": f"${pnl_amt:+.2f}",
-                "Score": f"{pos.get('current_score', pos['entry_score']):.0f}",
-                "Since": pos["entry_time"].strftime("%H:%M"),
-            })
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+@st.fragment(run_every=2)
+def _bot_live_panel():
+    """Live-updating panel — only this fragment re-renders every 2s."""
+    state = _get_bot_state()
 
-    # -- Activity log ---------------------------------------------------------
-    if _bot_state.trade_log:
-        st.markdown("##### Activity Log")
-        with st.expander(
-            f"Recent trades ({len(_bot_state.trade_log)})", expanded=True
-        ):
-            for entry in _bot_state.trade_log[:50]:
-                color = "#00C853" if entry["action"] == "BUY" else "#FF1744"
-                pnl_str = (
-                    f" &nbsp;|&nbsp; P&L: ${entry['pnl']:+.2f}"
-                    if entry["action"] == "SELL"
-                    else ""
-                )
-                st.markdown(
-                    f"<small style='color:#8B949E'>[{entry['time']}]</small> "
-                    f"<span style='color:{color};font-weight:700'>{entry['action']}</span> "
-                    f"<b>{entry['ticker']}</b> {entry['shares']}sh "
-                    f"@ ${entry['price']:.2f} (score {entry['score']:.0f})"
-                    f"{pnl_str} — {entry['reason']}",
-                    unsafe_allow_html=True,
-                )
+    if state.portfolio_id:
+        col_pv, col_pnl, col_npos = st.columns(3)
+        with col_pv:
+            st.metric("Portfolio Value", f"${state.portfolio_value:,.2f}")
+        with col_pnl:
+            st.metric("Total P&L", f"${state.total_pnl:+,.2f}")
+        with col_npos:
+            st.metric("Open Positions", f"{len(state.open_positions)} / {MAX_POSITIONS}")
 
-# -- Auto-refresh: re-render every 2 seconds while bot is running -------------
-if _bot_state.is_running:
-    _time.sleep(2)
-    st.rerun()
+        # -- Open positions table ---------------------------------------------
+        if state.open_positions:
+            st.markdown("##### Open Positions")
+            rows = []
+            for ticker, pos in state.open_positions.items():
+                entry = pos["entry_price"]
+                current = pos.get("current_price", entry)
+                pnl_pct = (current - entry) / entry * 100 if entry > 0 else 0
+                pnl_amt = (current - entry) * pos["shares"]
+                rows.append({
+                    "Ticker": ticker,
+                    "Entry": f"${entry:.2f}",
+                    "Current": f"${current:.2f}",
+                    "P&L %": f"{pnl_pct:+.2f}%",
+                    "P&L $": f"${pnl_amt:+.2f}",
+                    "Score": f"{pos.get('current_score', pos['entry_score']):.0f}",
+                    "Since": pos["entry_time"].strftime("%H:%M"),
+                })
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+        # -- Activity log -----------------------------------------------------
+        if state.trade_log:
+            st.markdown("##### Activity Log")
+            with st.expander(
+                f"Recent trades ({len(state.trade_log)})", expanded=True
+            ):
+                for entry in state.trade_log[:50]:
+                    color = "#00C853" if entry["action"] == "BUY" else "#FF1744"
+                    pnl_str = (
+                        f" &nbsp;|&nbsp; P&L: ${entry['pnl']:+.2f}"
+                        if entry["action"] == "SELL"
+                        else ""
+                    )
+                    st.markdown(
+                        f"<small style='color:#8B949E'>[{entry['time']}]</small> "
+                        f"<span style='color:{color};font-weight:700'>{entry['action']}</span> "
+                        f"<b>{entry['ticker']}</b> {entry['shares']}sh "
+                        f"@ ${entry['price']:.2f} (score {entry['score']:.0f})"
+                        f"{pnl_str} — {entry['reason']}",
+                        unsafe_allow_html=True,
+                    )
+    elif state.is_running:
+        st.info("Bot is starting — creating portfolio...")
+    else:
+        st.caption("Click **Start Bot** to begin autonomous paper trading with $10,000.")
+
+
+_bot_live_panel()
