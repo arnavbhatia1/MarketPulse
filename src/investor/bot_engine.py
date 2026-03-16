@@ -113,8 +113,44 @@ def _check_vix() -> bool:
         return False
 
 
+def _sell_position(portfolio_id: str, ticker: str, pos: dict, reason: str) -> bool:
+    """Execute a sell and update state. Returns True if successful."""
+    current_price = pos.get("current_price", pos["entry_price"])
+    result = execute_sell(portfolio_id, ticker, pos["shares"])
+    pnl = round((current_price - pos["entry_price"]) * pos["shares"], 2)
+
+    if "error" not in result:
+        with _lock:
+            _state.open_positions.pop(ticker, None)
+            _state.trade_log.insert(0, {
+                "time": datetime.now().strftime("%H:%M"),
+                "action": "SELL",
+                "ticker": ticker,
+                "price": current_price,
+                "shares": pos["shares"],
+                "score": pos.get("current_score", 0),
+                "reason": reason,
+                "pnl": pnl,
+            })
+        logger.info("Sold %s: %s (P&L: $%.2f)", ticker, reason, pnl)
+        return True
+    else:
+        with _lock:
+            _state.pending_sells.add(ticker)
+        logger.warning("Sell failed for %s → pending: %s", ticker, result["error"])
+        return False
+
+
 def _check_exits(portfolio_id: str, stop_event: threading.Event) -> None:
-    """Evaluate open positions; sell those where signal has reversed."""
+    """Smart exit engine — sells losers, takes profits, and frees slots for rotation.
+
+    Exit triggers:
+    1. SIGNAL REVERSAL: score dropped 30%+ from entry or below absolute threshold (40)
+    2. PROFIT TAKING: score is declining AND position is profitable — lock in gains
+       before they evaporate (score dropped 15%+ from entry while P&L is positive)
+    3. MOMENTUM STALL: position held 10+ cycles with score trending flat or down —
+       capital is better deployed elsewhere
+    """
     with _lock:
         positions = dict(_state.open_positions)
 
@@ -140,39 +176,34 @@ def _check_exits(portfolio_id: str, stop_event: threading.Event) -> None:
             continue
 
         entry_score = pos["entry_score"]
-        should_exit = (
-            current_score < entry_score * (1 - EXIT_SCORE_DROP_THRESHOLD)
-            or current_score < EXIT_ABSOLUTE_THRESHOLD
-        )
-        if not should_exit:
+        entry_price = pos["entry_price"]
+        pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
+        score_change_pct = (current_score - entry_score) / entry_score if entry_score > 0 else 0
+
+        # Exit reason 1: Signal reversal — score cratered
+        if (current_score < entry_score * (1 - EXIT_SCORE_DROP_THRESHOLD)
+                or current_score < EXIT_ABSOLUTE_THRESHOLD):
+            reason = (
+                f"signal reversal {entry_score:.0f}→{current_score:.0f}"
+                if current_score >= EXIT_ABSOLUTE_THRESHOLD
+                else f"below threshold ({current_score:.0f})"
+            )
+            _sell_position(portfolio_id, ticker, pos, reason)
             continue
 
-        reason = (
-            f"score dropped {entry_score:.0f}→{current_score:.0f}"
-            if current_score >= EXIT_ABSOLUTE_THRESHOLD
-            else f"below threshold ({current_score:.0f})"
-        )
-        result = execute_sell(portfolio_id, ticker, pos["shares"])
-        pnl = round((current_price - pos["entry_price"]) * pos["shares"], 2)
+        # Exit reason 2: Profit taking — score declining but we're in profit
+        # Sell before gains evaporate (score dropped 15%+ while position is green)
+        if pnl_pct > 0.005 and score_change_pct < -0.15:
+            reason = f"take profit +{pnl_pct*100:.1f}% (score fading {entry_score:.0f}→{current_score:.0f})"
+            _sell_position(portfolio_id, ticker, pos, reason)
+            continue
 
-        if "error" not in result:
-            with _lock:
-                _state.open_positions.pop(ticker, None)
-                _state.trade_log.insert(0, {
-                    "time": datetime.now().strftime("%H:%M"),
-                    "action": "SELL",
-                    "ticker": ticker,
-                    "price": current_price,
-                    "shares": pos["shares"],
-                    "score": current_score,
-                    "reason": reason,
-                    "pnl": pnl,
-                })
-            logger.info("Exited %s: %s", ticker, reason)
-        else:
-            with _lock:
-                _state.pending_sells.add(ticker)
-            logger.warning("Sell failed for %s → pending: %s", ticker, result["error"])
+        # Exit reason 3: Momentum stall — held too long with no improvement
+        # If held 10+ cycles and score hasn't improved, free the slot
+        cycles_held = _state.cycle_count - pos.get("entry_cycle", _state.cycle_count)
+        if cycles_held >= 10 and score_change_pct <= 0:
+            reason = f"stale position ({cycles_held} cycles, score flat {entry_score:.0f}→{current_score:.0f})"
+            _sell_position(portfolio_id, ticker, pos, reason)
 
 
 def _retry_pending_sells(portfolio_id: str, stop_event: threading.Event) -> None:
@@ -279,10 +310,12 @@ def _enter_positions(
     high_vix: bool,
     stop_event: threading.Event,
 ) -> None:
-    """Enter up to MAX_POSITIONS using score-based cash allocation.
+    """Enter positions using score-based allocation, rotating out weak holdings for stronger ones.
 
-    Tracks remaining_cash locally so each successive buy within the same
-    cycle uses updated (decremented) cash rather than the stale portfolio_cash.
+    Two modes:
+    1. OPEN SLOTS: if under MAX_POSITIONS, buy into empty slots
+    2. ROTATION: if at max, swap the weakest position for a stronger candidate
+       (candidate must score 10+ points higher to justify the swap cost)
     """
     with _lock:
         remaining_cash = _state.portfolio_cash
@@ -290,9 +323,36 @@ def _enter_positions(
     for candidate in scored:
         if stop_event.is_set():
             return
+
         with _lock:
-            if len(_state.open_positions) >= MAX_POSITIONS:
+            at_max = len(_state.open_positions) >= MAX_POSITIONS
+            # Find the weakest current position for rotation comparison
+            weakest_ticker = None
+            weakest_score = float("inf")
+            if at_max and _state.open_positions:
+                for t, p in _state.open_positions.items():
+                    s = p.get("current_score", p["entry_score"])
+                    if s < weakest_score:
+                        weakest_score = s
+                        weakest_ticker = t
+
+        # If at max capacity, only proceed if candidate beats weakest by 10+ points
+        if at_max:
+            if weakest_ticker is None:
                 break
+            if candidate["score"] <= weakest_score + 10:
+                continue  # not worth the swap
+            # Rotate: sell weakest, then buy candidate
+            with _lock:
+                weak_pos = _state.open_positions.get(weakest_ticker)
+            if weak_pos:
+                reason = f"rotated out for {candidate['ticker']} (score {weakest_score:.0f}→{candidate['score']:.0f})"
+                sold = _sell_position(portfolio_id, weakest_ticker, weak_pos, reason)
+                if not sold:
+                    continue  # sell failed, skip this candidate
+                # Refresh cash after the sale
+                with _lock:
+                    remaining_cash = _state.portfolio_cash
 
         alloc_pct = _get_allocation_pct(candidate["score"], high_vix)
         if alloc_pct == 0:
@@ -310,6 +370,7 @@ def _enter_positions(
                     "shares": shares,
                     "entry_score": candidate["score"],
                     "entry_time": datetime.now(),
+                    "entry_cycle": _state.cycle_count,
                     "current_price": candidate["price"],
                     "current_score": candidate["score"],
                     "allocation_pct": alloc_pct,

@@ -195,7 +195,7 @@ class TestCheckExits:
         _check_exits("pid", threading.Event())
         assert "AAPL" not in bot_engine._state.open_positions
         assert bot_engine._state.trade_log[0]["action"] == "SELL"
-        assert "dropped" in bot_engine._state.trade_log[0]["reason"]
+        assert "signal reversal" in bot_engine._state.trade_log[0]["reason"]
 
     @patch("src.investor.bot_engine.execute_sell",
            return_value={"status": "executed"})
@@ -362,14 +362,19 @@ class TestEnterPositions:
         # remaining_cash starts at 10_000, score=85 → tier 70-89 → 8% → 800 → 8 shares @ $100
         mock_buy.assert_called_once_with("pid", "AAPL", 8)
 
+    @patch("src.investor.bot_engine._sell_position", return_value=False)
     @patch("src.investor.bot_engine.execute_buy", return_value={"status": "executed"})
-    def test_does_not_exceed_max_positions(self, mock_buy):
+    def test_does_not_exceed_max_positions(self, mock_buy, mock_sell):
         from src.investor import bot_engine
         from src.investor.bot_engine import _enter_positions, MAX_POSITIONS
         bot_engine._state.portfolio_cash = 100_000.0
-        # Fill to max
+        # Fill to max with positions scoring 80 — candidates at 85 won't trigger
+        # rotation (need 10+ point gap, but 85 - 80 = 5)
         for i in range(MAX_POSITIONS):
-            bot_engine._state.open_positions[f"HELD{i}"] = {}
+            bot_engine._state.open_positions[f"HELD{i}"] = {
+                "entry_score": 80, "current_score": 80, "entry_price": 100.0,
+                "shares": 10, "current_price": 100.0,
+            }
         candidates = [{"ticker": f"NEW{i}", "score": 85, "price": 100.0} for i in range(3)]
         _enter_positions("pid", candidates, False, threading.Event())
         mock_buy.assert_not_called()
