@@ -14,7 +14,7 @@ import anthropic
 logger = logging.getLogger(__name__)
 
 _FALLBACK = (
-    "Sentiment data has been aggregated from Reddit, Stocktwits, and financial news. "
+    "Sentiment data has been aggregated from financial news RSS feeds. "
     "See the source breakdown below for details."
 )
 
@@ -57,7 +57,7 @@ def _build_prompt(company: str, ticker: str, ticker_data: dict) -> str:
     top_posts = ticker_data.get('top_posts', {})
 
     samples = []
-    for source in ('reddit', 'stocktwits', 'news'):
+    for source in ('news',):
         for post in top_posts.get(source, [])[:2]:
             text = str(post.get('text', ''))[:140]
             samples.append(f"[{source}] {text}")
@@ -69,9 +69,7 @@ def _build_prompt(company: str, ticker: str, ticker_data: dict) -> str:
 Ticker: {ticker} ({company})
 Overall sentiment: {ticker_data.get('dominant_sentiment', 'unknown')}
 Mentions: {ticker_data.get('mention_count', 0)} posts
-Reddit: {ticker_data.get('reddit_sentiment', 'N/A')}
-Stocktwits: {ticker_data.get('stocktwits_sentiment', 'N/A')}
-News: {ticker_data.get('news_sentiment', 'N/A')}
+News sentiment: {ticker_data.get('news_sentiment', 'N/A')}
 7-day trend: {trend}
 
 Sample posts:

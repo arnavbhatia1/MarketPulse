@@ -10,14 +10,6 @@ data:
     model_dir: "data/models"
 
 ingestion:
-  reddit:
-    subreddits: ["wallstreetbets", "stocks", "investing"]
-    post_limit_per_sub: 200
-    include_comments: false
-    min_score: 5
-  stocktwits:
-    symbols: ["AAPL", "TSLA", "NVDA", "GME", "AMC", "SPY", "MSFT", "AMZN"]
-    limit_per_symbol: 50
   news:
     query_terms: ["stock market", "earnings", "IPO", "SEC", "Fed",
                   "Wall Street", "S&P 500", "Nasdaq", "Dow Jones",
