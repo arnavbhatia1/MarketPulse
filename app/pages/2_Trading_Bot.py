@@ -105,11 +105,12 @@ with col_vix:
     if "error" not in vix_data:
         vix = vix_data.get("vix", "N/A")
         signal = vix_data.get("vix_signal", "normal")
-        pct = vix_data.get("vix_1y_percentile", 0)
+        pct = vix_data.get("vix_1y_percentile", 0) or 0
         vix_css = {"fear": "vix-high", "normal": "vix-normal", "complacency": "vix-low"}.get(signal, "vix-normal")
+        pct_display = f"{pct:.0f}th pctile" if isinstance(pct, (int, float)) else "N/A"
         st.markdown(f'''<div class="regime-banner" style="text-align:center">
             <div class="vix-badge {vix_css}" style="font-size:1.2rem">VIX: {vix}</div>
-            <div style="color:#8B949E;font-size:0.8rem;margin-top:0.3rem">{signal.title()} &middot; {pct:.0f}th pctile</div>
+            <div style="color:#8B949E;font-size:0.8rem;margin-top:0.3rem">{signal.title()} &middot; {pct_display}</div>
         </div>''', unsafe_allow_html=True)
 
 # Top Movers
@@ -167,8 +168,11 @@ from app.components.trading_charts import (
 
 st.markdown("#### Ticker Analysis")
 selected_ticker = st.text_input(
-    "Search ticker", value=st.session_state.get("selected_ticker", ""),
-    placeholder="e.g. AAPL", key="ticker_input",
+    "Search ticker",
+    value=st.session_state.get("selected_ticker", ""),
+    placeholder="e.g. AAPL, LCID — enter symbol, not company name",
+    key="ticker_input",
+    help="Enter a ticker symbol (e.g. LCID, not 'Lucid Motors')",
 )
 
 if selected_ticker:
