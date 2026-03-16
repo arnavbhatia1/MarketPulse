@@ -5,6 +5,7 @@ Run: streamlit run app/MarketPulse.py
 """
 
 import html as html_mod
+import re
 import streamlit as st
 import sys, os, json
 from datetime import date, timedelta
@@ -18,6 +19,12 @@ load_dotenv(os.path.join(_root, '.env'))
 
 from app.components.styles import apply_theme, COLORS, SENTIMENT_COLORS
 from app.components.charts import ticker_mentions_bar, sentiment_trend
+
+_TAG_RE = re.compile(r'<[^>]+>')
+
+def _strip_html(text: str) -> str:
+    """Strip HTML tags and decode entities from post text."""
+    return html_mod.unescape(_TAG_RE.sub('', text))
 
 st.set_page_config(
     page_title="MarketPulse",
@@ -174,7 +181,7 @@ if search_clicked and query.strip():
                 </div>
                 """, unsafe_allow_html=True)
                 for post in src_posts[:3]:
-                    st.caption(f"> {post['text'][:100]}...")
+                    st.caption(f"> {_strip_html(post['text'])[:100]}...")
 
     st.markdown("---")
 
