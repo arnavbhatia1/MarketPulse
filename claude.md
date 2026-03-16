@@ -69,11 +69,10 @@ MarketPulse/
 │       ├── logger.py                  # Structured logging
 │       └── cache.py                   # API response cache
 ├── scripts/
-│   ├── run_pipeline.py                # CLI: full pipeline end-to-end
-│   └── train.py                       # CLI: train model on gold standard data
+│   └── run_pipeline.py                # CLI: full pipeline end-to-end
 ├── config/
 │   └── default.yaml                   # RSS sources, model hyperparameters, MCP server config
-├── tests/                             # pytest test suite (216 tests)
+├── tests/                             # pytest test suite (210 tests)
 ├── data/
 │   ├── marketpulse.db                 # SQLite — sentiment data (gitignored)
 │   ├── financial_mcp.db               # SQLite — portfolio state, managed by MCP server (gitignored)
@@ -85,20 +84,32 @@ MarketPulse/
 
 ## Trading Bot (`src/investor/bot_engine.py`)
 
-Autonomous paper-trading scalp bot. Runs continuous cycles (no timer — immediate rescan after each cycle with 5s pause).
+Autonomous paper-trading bot built on probability math — thinks like a casino, not a gambler. Runs continuous cycles (no timer — immediate rescan with 5s pause between cycles).
 
-**Cycle:** detect regime → check VIX → retry pending sells → smart exits → scan universe → score candidates → enter/rotate positions → snapshot portfolio
+**Cycle:** detect regime → check VIX → retry pending sells → smart exits → scan universe → score candidates → enter/rotate positions → recompute stats → snapshot portfolio
 
-**Smart exits (3 triggers):**
+**Quant Decision Engine:**
+- **Expected Value (EV):** `EV = (WinRate × AvgWin) - (LossRate × AvgLoss)` — computed from actual closed trades every cycle. Only sizes up when EV is positive.
+- **Kelly Criterion:** half-Kelly position sizing from real win/loss statistics. Replaces fixed percentage tiers. Adapts as the bot learns its own edge.
+- **Risk of Ruin:** probability of total account loss, computed every cycle. If >5%, position sizes auto-halve to protect the account.
+- **Variance tracking:** standard deviation of trade P&L. Positions with unrealized loss >2σ are cut as outliers.
+- **Conviction scaling:** higher MCP scores → proportionally more capital (score/100 × base risk).
+- **Hard 2% cap:** never risk more than 2% of portfolio per trade, regardless of Kelly.
+- **Conservative bootstrap:** 1% per trade until 10+ closed trades provide enough data for Kelly (Law of Large Numbers).
+
+**Smart exits (4 triggers):**
 1. Signal reversal — score dropped 30%+ from entry or below 40
-2. Profit taking — score fading 15%+ while position is green
-3. Momentum stall — held 10+ cycles with no score improvement
+2. Profit taking — score fading 15%+ while position is green (lock gains)
+3. Momentum stall — held 10+ cycles with no score improvement (free slot)
+4. Outlier loss — unrealized loss exceeds 2 standard deviations (cut variance)
 
 **Position rotation:** When at 20 max positions, sells weakest holding if a new candidate scores 10+ points higher.
 
-**Score-based sizing:** 90-100 → 12%, 70-89 → 8%, 60-69 → 5% of cash. VIX > 30 halves all tiers.
-
-**UI:** `@st.fragment(run_every=1)` — entire bot panel refreshes every second (live counter, positions, P&L, activity log). No page flicker.
+**Dashboard:** `@st.fragment(run_every=1)` — live-updating panel with:
+- Portfolio value, P&L, open positions count
+- Edge Statistics: EV/trade, win rate, R:R ratio, half-Kelly %, risk of ruin, streak, σ
+- Open positions table with real-time P&L
+- Activity log streaming buys/sells as they happen
 
 ---
 
@@ -127,6 +138,9 @@ start.bat                     # starts MCP server + Streamlit on localhost:8501
 - **RSS-only primary source** — no API keys required for core functionality
 - **Two clean pages** — MarketPulse (sentiment) and Trading Bot (MCP-powered)
 - **Data separation** — home page uses only RSS/SQLite; trading bot uses only MCP server
+- **MCP = data layer, bot_engine = decision layer** — the MCP server provides market intelligence; the bot's math determines when to buy/sell and how much to risk
+- **Probability over prediction** — position sizing from actual trade statistics (Kelly Criterion), not gut feel or fixed percentages
+- **Many small bets** — 2% max risk per trade, conservative 1% until edge is proven over 10+ trades
 - **Ticker detail as dialog** — `@st.dialog` popup, not a separate page
 - **Live bot panel** — `@st.fragment(run_every=1)` for real-time updates without page flicker
 - **Paper trading** — all trades go through MCP execute_buy/execute_sell on financial_mcp.db
