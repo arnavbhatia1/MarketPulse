@@ -50,7 +50,10 @@
       "Bash(do echo:*)",
       "Read(//c/Users/abhat/Personal/MarketPulse/**)",
       "Bash(done)",
-      "Bash(grep -h \"class=\" C:/Users/abhat/Personal/MarketPulse/app/MarketPulse.py C:/Users/abhat/Personal/MarketPulse/app/pages/*.py | grep -oE 'class=\"[^\"]*\"' | sort | uniq)"
+      "Bash(grep -h \"class=\" C:/Users/abhat/Personal/MarketPulse/app/MarketPulse.py C:/Users/abhat/Personal/MarketPulse/app/pages/*.py | grep -oE 'class=\"[^\"]*\"' | sort | uniq)",
+      "Bash(grep:*)",
+      "Bash(python:*)",
+      "Bash(pip install:*)"
     ]
   }
 }
