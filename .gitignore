@@ -4,6 +4,9 @@ data/models/*.pkl
 data/models/*.json
 data/models/v*/
 !data/models/.gitkeep
+data/marketpulse.db
+data/financial_mcp.db
+data/portfolio_id.txt
 __pycache__/
 *.pyc
 .pytest_cache/
