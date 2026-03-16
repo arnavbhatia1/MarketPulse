@@ -33,7 +33,7 @@ from src.investor.mcp_client import (
 logger = logging.getLogger(__name__)
 
 CYCLE_INTERVAL = 5            # minimum seconds between cycles (avoids hammering MCP)
-MAX_POSITIONS = 5
+MAX_POSITIONS = 20
 MIN_SCORE = 60
 EXIT_SCORE_DROP_THRESHOLD = 0.30   # 30% drop from entry score
 EXIT_ABSOLUTE_THRESHOLD = 40
