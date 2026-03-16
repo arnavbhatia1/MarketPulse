@@ -14,7 +14,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 from src.investor.mcp_client import (
@@ -32,7 +32,7 @@ from src.investor.mcp_client import (
 
 logger = logging.getLogger(__name__)
 
-CYCLE_INTERVAL = 300          # seconds between cycles
+CYCLE_INTERVAL = 5            # minimum seconds between cycles (avoids hammering MCP)
 MAX_POSITIONS = 5
 MIN_SCORE = 60
 EXIT_SCORE_DROP_THRESHOLD = 0.30   # 30% drop from entry score
@@ -66,7 +66,6 @@ class BotState:
     trade_log: list = field(default_factory=list)
     cycle_count: int = 0
     last_cycle_time: Optional[datetime] = None
-    next_cycle_time: Optional[datetime] = None
 
 
 _state = BotState()
@@ -446,9 +445,8 @@ class BotEngine:
                 _run_cycle(portfolio_id, self._stop_event)
             except Exception as e:
                 logger.error("Cycle error: %s", e, exc_info=True)
-            with _lock:
-                _state.next_cycle_time = datetime.now() + timedelta(seconds=CYCLE_INTERVAL)
-            # Sleep CYCLE_INTERVAL seconds, wake every second to check stop
+            # Brief pause before next cycle to avoid hammering MCP server,
+            # then immediately scan again — no fixed timer.
             for _ in range(CYCLE_INTERVAL):
                 if self._stop_event.is_set():
                     break

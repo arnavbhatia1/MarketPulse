@@ -420,15 +420,10 @@ with col_status:
         )
 
 with col_timer:
-    if _bot_state.next_cycle_time and _bot_state.is_running:
-        remaining = (_bot_state.next_cycle_time - datetime.now()).total_seconds()
-        if remaining > 0:
-            mins, secs = divmod(int(remaining), 60)
-            st.caption(
-                f"Next cycle in **{mins}m {secs:02d}s** · Cycle #{_bot_state.cycle_count}"
-            )
-        else:
-            st.caption(f"Cycle #{_bot_state.cycle_count} — running now...")
+    if _bot_state.is_running:
+        last = _bot_state.last_cycle_time
+        elapsed = f"{(datetime.now() - last).seconds}s ago" if last else "starting..."
+        st.caption(f"Running continuously · Cycle #{_bot_state.cycle_count} · Last: {elapsed}")
 
 # -- Portfolio metrics --------------------------------------------------------
 if _bot_state.portfolio_id:
