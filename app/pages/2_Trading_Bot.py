@@ -478,10 +478,7 @@ if _bot_state.portfolio_id:
                     unsafe_allow_html=True,
                 )
 
-# -- Auto-refresh (non-blocking) ----------------------------------------------
+# -- Auto-refresh: re-render every 2 seconds while bot is running -------------
 if _bot_state.is_running:
-    _now = _time.time()
-    _last = st.session_state.get("bot_last_refresh", 0)
-    if _now - _last >= 10:
-        st.session_state["bot_last_refresh"] = _now
-        st.rerun()
+    _time.sleep(2)
+    st.rerun()
