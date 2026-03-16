@@ -162,26 +162,23 @@ if search_clicked and query.strip():
             fig = sentiment_trend(by_day)
             st.plotly_chart(fig, width="stretch")
 
-        # By Source breakdown
-        st.markdown("#### By Source")
+        # News headlines
+        st.markdown("#### News Headlines")
         top_posts = ticker_data.get('top_posts', {})
-        src_cols = st.columns(3)
-        for i, source in enumerate(('reddit', 'stocktwits', 'news')):
-            src_sentiment = ticker_data.get(f'{source}_sentiment') or 'N/A'
-            src_posts = top_posts.get(source, [])
-            with src_cols[i]:
-                badge_class = f"sentiment-badge-{src_sentiment}" if src_sentiment != 'N/A' else "sentiment-badge-neutral"
-                safe_src_sent = html_mod.escape(str(src_sentiment))
-                st.markdown(f"""
-                <div class="source-card">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                        <strong>{html_mod.escape(source.upper())}</strong>
-                        <span class="sentiment-badge {badge_class}">{safe_src_sent.upper()}</span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                for post in src_posts[:3]:
-                    st.caption(f"> {_strip_html(post['text'])[:100]}...")
+        news_sentiment = ticker_data.get('news_sentiment') or 'N/A'
+        news_posts = top_posts.get('news', [])
+        badge_class = f"sentiment-badge-{news_sentiment}" if news_sentiment != 'N/A' else "sentiment-badge-neutral"
+        safe_sent = html_mod.escape(str(news_sentiment))
+        st.markdown(f"""
+        <div class="source-card">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <strong>NEWS</strong>
+                <span class="sentiment-badge {badge_class}">{safe_sent.upper()}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        for post in news_posts[:5]:
+            st.caption(f"> {_strip_html(post['text'])[:120]}...")
 
     st.markdown("---")
 
@@ -236,26 +233,23 @@ def _show_ticker_detail(company: str, data: dict):
         fig = sentiment_trend(by_day)
         st.plotly_chart(fig, width="stretch")
 
-    # By Source breakdown
-    st.markdown("#### By Source")
+    # News headlines
+    st.markdown("#### News Headlines")
     top_posts = data.get('top_posts', {})
-    src_cols = st.columns(3)
-    for i, source in enumerate(('reddit', 'stocktwits', 'news')):
-        src_sentiment = data.get(f'{source}_sentiment') or 'N/A'
-        src_posts = top_posts.get(source, [])
-        with src_cols[i]:
-            badge_class = f"sentiment-badge-{src_sentiment}" if src_sentiment != 'N/A' else "sentiment-badge-neutral"
-            safe_src_sent = html_mod.escape(str(src_sentiment))
-            st.markdown(f"""
-            <div class="source-card">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                    <strong>{html_mod.escape(source.upper())}</strong>
-                    <span class="sentiment-badge {badge_class}">{safe_src_sent.upper()}</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            for post in src_posts[:3]:
-                st.caption(f"> {post['text'][:100]}...")
+    news_sentiment = data.get('news_sentiment') or 'N/A'
+    news_posts = top_posts.get('news', [])
+    badge_class = f"sentiment-badge-{news_sentiment}" if news_sentiment != 'N/A' else "sentiment-badge-neutral"
+    safe_sent = html_mod.escape(str(news_sentiment))
+    st.markdown(f"""
+    <div class="source-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <strong>NEWS</strong>
+            <span class="sentiment-badge {badge_class}">{safe_sent.upper()}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    for post in news_posts[:5]:
+        st.caption(f"> {_strip_html(post['text'])[:120]}...")
 
 
 # ── Market Overview grid (SECONDARY) ─────────────────────────────────────────

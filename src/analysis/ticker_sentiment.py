@@ -34,8 +34,7 @@ class TickerSentimentAnalyzer:
         Analyze per-ticker sentiment from labeled DataFrame.
 
         Returns dict mapping company name to ticker summary dict.
-        New fields vs. original: reddit_sentiment, news_sentiment,
-        stocktwits_sentiment, sentiment_by_day, top_posts.
+        Fields: news_sentiment, sentiment_by_day, top_posts.
         """
         df = df.copy()
 
@@ -88,14 +87,11 @@ class TickerSentimentAnalyzer:
             dominant = sentiment_counts.most_common(1)[0][0]
 
             # Per-source dominant sentiment
-            source_sentiments = {}
-            for src in ('reddit', 'stocktwits', 'news'):
-                src_posts = [p for p in posts if p['source'] == src]
-                if src_posts:
-                    src_counts = Counter(p['sentiment'] for p in src_posts)
-                    source_sentiments[src] = src_counts.most_common(1)[0][0]
-                else:
-                    source_sentiments[src] = None
+            source_sentiments = {'news': None}
+            news_posts = [p for p in posts if p['source'] == 'news']
+            if news_posts:
+                news_counts = Counter(p['sentiment'] for p in news_posts)
+                source_sentiments['news'] = news_counts.most_common(1)[0][0]
 
             # Dominant sentiment per day
             day_groups = {}
@@ -106,14 +102,12 @@ class TickerSentimentAnalyzer:
                 for day, sentiments in day_groups.items()
             }
 
-            # Top 3 posts per source sorted by confidence desc
-            top_posts = {'reddit': [], 'stocktwits': [], 'news': []}
-            for src in ('reddit', 'stocktwits', 'news'):
-                src_posts = sorted(
-                    [p for p in posts if p['source'] == src],
-                    key=lambda p: p['confidence'], reverse=True
-                )[:3]
-                top_posts[src] = src_posts
+            # Top posts sorted by confidence desc
+            top_posts = {'news': []}
+            top_posts['news'] = sorted(
+                [p for p in posts if p['source'] == 'news'],
+                key=lambda p: p['confidence'], reverse=True
+            )[:5]
 
             confidences = [p['confidence'] for p in posts]
             results[company] = {
@@ -126,9 +120,9 @@ class TickerSentimentAnalyzer:
                 'bullish_ratio': sentiment_counts.get('bullish', 0) / total,
                 'bearish_ratio': sentiment_counts.get('bearish', 0) / total,
                 'avg_confidence': sum(confidences) / len(confidences),
-                'reddit_sentiment': source_sentiments['reddit'],
+                'reddit_sentiment': None,
                 'news_sentiment': source_sentiments['news'],
-                'stocktwits_sentiment': source_sentiments['stocktwits'],
+                'stocktwits_sentiment': None,
                 'sentiment_by_day': sentiment_by_day,
                 'top_posts': top_posts,
                 'posts': sorted(posts, key=lambda p: p['confidence'], reverse=True),
