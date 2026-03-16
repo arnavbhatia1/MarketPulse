@@ -298,6 +298,17 @@ def _bot_live_panel():
 
     # -- Portfolio metrics + positions + log --------------------------------
     if state.portfolio_id:
+        # Market hours check (US Eastern, Mon-Fri 9:30-16:00)
+        from zoneinfo import ZoneInfo
+        _et = datetime.now(ZoneInfo("America/New_York"))
+        _market_open = (
+            _et.weekday() < 5
+            and _et.hour * 60 + _et.minute >= 570   # 9:30
+            and _et.hour * 60 + _et.minute < 960     # 16:00
+        )
+        if not _market_open:
+            st.caption("Market closed — prices frozen at last close. P&L updates when market opens.")
+
         col_pv, col_pnl, col_npos = st.columns(3)
         with col_pv:
             st.metric("Portfolio Value", f"${state.portfolio_value:,.2f}")
