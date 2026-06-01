@@ -9,6 +9,9 @@ No API keys required. Works out of the box.
 
 ## Quick Start
 
+**Deployed**: https://navs-marketpulse.streamlit.app/
+
+**Local**
 ```bash
 pip install -r requirements.txt
 pip install financial-mcp-server   # the MCP market-data + paper-trading server (PyPI)
