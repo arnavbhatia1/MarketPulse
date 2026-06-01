@@ -1,0 +1,16 @@
+#!/bin/sh
+# Pre-push guard — run the offline test suite before any push so broken code
+# never reaches the branch Streamlit deploys from.
+#
+# Enable once per clone:   git config core.hooksPath .githooks
+# Bypass (discouraged):    git push --no-verify
+
+echo "pre-push: running tests before push..."
+if ! python -m pytest -q; then
+  echo ""
+  echo "[BLOCKED] Tests failed - push aborted to keep broken code off the deployed app."
+  echo "          Fix the failures, or override with: git push --no-verify"
+  exit 1
+fi
+echo "[OK] tests passed - pushing."
+exit 0
