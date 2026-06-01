@@ -19,11 +19,11 @@ TF-IDF + LogReg classifies all posts (auto-trains when ≥200 labeled)
         ↓
 Posts + per-ticker summaries saved to SQLite (data/marketpulse.db)
         ↓
-Home page: top 50 tickers by mentions, search → AI verdict → dialog popup
+Home page: auto-refreshed mood grid (100+ tickers, sort/filter), search → AI verdict → dialog
         ↓
 Trading Bot: MCP Client connects to financial-mcp-server via SSE
-  → autonomous scalp bot (continuous cycles, score-based entry/exit, rotation)
-  → portfolio state in data/financial_mcp.db (managed by MCP server)
+  → autonomous bot (continuous cycles, score-based entry/exit, rotation, equity curve)
+  → news-sentiment → score bridge; portfolio state in data/financial_mcp.db (MCP server)
 ```
 
 ---
@@ -32,7 +32,8 @@ Trading Bot: MCP Client connects to financial-mcp-server via SSE
 
 ```
 MarketPulse/
-├── start.bat                          # One-command launcher (MCP server + Streamlit)
+├── start.ps1                          # Launcher (recommended) — opens Chrome, clean Ctrl-C
+├── start.bat                          # Launcher (cmd) — MCP server + Streamlit
 ├── app/
 │   ├── MarketPulse.py                 # Home: search + sortable/filterable mood grid + detail dialog
 │   ├── auto_refresh.py                # Background scheduler — keeps sentiment data fresh
@@ -151,11 +152,15 @@ News RSS is free — no keys needed.
 
 ## Running
 
-```bash
+```powershell
 pip install -r requirements.txt
 cp .env.example .env          # add ANTHROPIC_API_KEY if you want AI verdicts
-start.bat                     # starts MCP server + Streamlit on localhost:8501
+.\start.ps1                   # recommended: opens Chrome, clean Ctrl-C (or start.bat)
 ```
+
+Deploy: Streamlit Community Cloud, main file `app/MarketPulse.py`. Cloud-host yfinance is
+throttled — the MCP server (v0.1.10+) impersonates a browser via `curl_cffi` to mitigate it;
+record demos locally for reliability. See `DEMO_RUNBOOK.md`.
 
 ---
 

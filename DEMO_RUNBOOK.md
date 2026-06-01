@@ -12,10 +12,11 @@ placing trades by itself. The server is the engine; the bot is the proof.
 ```powershell
 cd C:\Users\abhat\Personal\MarketPulse
 python scripts/seed_demo.py --reset   # start the bot cold so everything shown is real
-.\start.bat                           # launches the MCP server (SSE :8520) + dashboard
+.\start.ps1                           # launches MCP server (SSE :8520) + dashboard, opens Chrome
 ```
 
-Wait for http://localhost:8501 to open.
+`.\start.ps1` opens the dashboard in **Chrome** and stops cleanly on Ctrl-C (no Y/N prompt).
+Record **locally** (home IP) — yfinance is reliable there; on cloud it can be throttled.
 
 ---
 
@@ -49,6 +50,7 @@ standard MCP — so Claude Desktop, Cursor, or any agent can use the same 33 too
 ## If something's off
 | Symptom | Fix |
 |---------|-----|
-| `start.bat` not recognized | Use `.\start.bat` (PowerShell needs the `.\`). |
-| "MCP server not running" | Confirm port 8520 is listening; the server must run with `--transport sse` (start.bat does this). |
-| Bot opens no positions | Market may be closed, or scores are below 60 — let a cycle or two run, ideally during US market hours. |
+| `start.ps1` won't run | `powershell -ExecutionPolicy Bypass -File .\start.ps1` |
+| "MCP server not running" | Confirm port 8520 is listening; the server must run with `--transport sse` (the launchers do this). |
+| Bot opens no positions | Market may be closed, or scores are below the threshold — let a cycle or two run, ideally during US market hours. |
+| Prices/scores show N/A on the deployed app | Cloud-host yfinance throttling — works locally. Record locally; use the cloud link as a "try it" CTA. |
