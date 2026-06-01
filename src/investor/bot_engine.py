@@ -35,6 +35,7 @@ from src.investor.mcp_client import (
     scan_anomalies,
     scan_volume_leaders,
     scan_gap_movers,
+    scan_universe,
     analyze_ticker,
 )
 from src.storage.db import load_ticker_cache
@@ -53,7 +54,11 @@ MAX_POSITIONS = 20
 MIN_SCORE = 60
 EXIT_SCORE_DROP_THRESHOLD = 0.30
 EXIT_ABSOLUTE_THRESHOLD = 40
-STARTING_CAPITAL = 10_000.0
+# Standard paper-trading account size. At 2%/trade this is ~$2k per position,
+# enough to take real share counts across all price ranges (a $10k account
+# can't hold a $300–600 mega-cap inside a 2% cap, so it filled only penny names).
+STARTING_CAPITAL = 100_000.0
+SEED_BASE_CAPITAL = 10_000.0  # the illustrative seed ledger was authored at $10k
 
 # Exit thresholds — price-based
 TRAILING_STOP_PCT = 0.03      # sell if price drops 3% from peak since entry
@@ -71,9 +76,10 @@ MAX_KELLY_FRACTION = 0.5      # use half-Kelly (full Kelly is too aggressive)
 MAX_ACCEPTABLE_RUIN = 0.05    # 5% risk of ruin = reduce sizing
 VARIANCE_LOOKBACK = 50        # last N trades for rolling stats
 
-SCORE_CANDIDATES_LIMIT = 25   # score this many candidates per cycle (~1s each)
+SCORE_CANDIDATES_LIMIT = 25   # candidates batch-scored per cycle (one scan_universe call)
 MAX_UNIVERSE_SIZE = 250       # full candidate pool; sampled SCORE_CANDIDATES_LIMIT/cycle
 SENTIMENT_TILT_MAX = 10       # max points RSS sentiment adds/subtracts from a score
+CATALYST_BONUS_MAX = 10       # max points the event scanners add to a candidate's score
 EQUITY_CURVE_MAX = 1000       # cap stored equity-curve points
 
 # Seed tickers — only used as fallback if no dynamic sources return anything
@@ -273,6 +279,9 @@ class BotState:
     starting_capital: float = STARTING_CAPITAL
     # Blend MarketPulse RSS sentiment into MCP scores (the two-tab bridge)
     sentiment_bridge: bool = True
+    # Seed an illustrative trade history on a cold start so the Edge panel and
+    # equity curve are populated immediately instead of empty.
+    warm_start: bool = True
 
 
 _state = BotState()
@@ -344,6 +353,95 @@ def load_state() -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Warm start — illustrative ledger so the Edge panel is never empty on a cold
+# start. These round trips are demo history; once the live bot runs, real
+# trades append to and eventually dominate this log. Shared with scripts/seed_demo.py.
+# ---------------------------------------------------------------------------
+
+# (ticker, shares, entry_price, exit_price, sell_reason) — each <=2% of $10k.
+_SEED_ROUND_TRIPS = [
+    ("NIO", 33, 5.99, 6.35, "take profit +6.0% (score fading 88→70)"),
+    ("SOFI", 10, 18.69, 17.95, "signal reversal 74→52"),
+    ("GME", 9, 21.38, 22.70, "take profit +6.2% (score fading 86→69)"),
+    ("KO", 2, 78.73, 81.10, "trailing stop -2.9% from peak $83.50→$81.10"),
+    ("INTC", 1, 111.11, 108.50, "hard stop -2.3% (score reversal 81→44)"),
+    ("CSCO", 1, 121.03, 124.80, "take profit +3.1% (score fading 79→63)"),
+    ("WMT", 1, 114.16, 116.90, "take profit +2.4% (score fading 77→62)"),
+    ("COIN", 1, 186.39, 179.20, "hard stop -3.9% (limit -5%)"),
+    ("DIS", 1, 102.35, 105.60, "take profit +3.2% (score fading 82→66)"),
+    ("PLTR", 1, 163.16, 170.40, "take profit +4.4% (score fading 90→71)"),
+    ("AMD", 1, 119.10, 116.00, "signal reversal 72→51"),
+    ("F", 25, 7.40, 7.18, "trailing stop -3.0% from peak $7.62→$7.18"),
+    ("SNAP", 18, 10.20, 10.75, "take profit +5.4% (score fading 84→69)"),
+    ("HOOD", 8, 24.80, 26.10, "take profit +5.2% (score fading 80→70)"),
+]
+
+
+def _seed_clock(minute: int) -> str:
+    """Minutes after 09:00 ET → HH:MM, rolling hours over correctly."""
+    return f"{9 + minute // 60:02d}:{minute % 60:02d}"
+
+
+def build_seed_trade_log(starting_capital: float = STARTING_CAPITAL) -> list:
+    """Newest-first trade log of illustrative BUY/SELL round trips.
+
+    Share counts (authored at $10k) scale with *starting_capital* so each seeded
+    position stays the same ~fraction of the account regardless of its size.
+    """
+    factor = max(1, round(starting_capital / SEED_BASE_CAPITAL))
+    log: list = []
+    minute = 31  # start at 09:31 ET
+    for i, (ticker, base_shares, entry, exit_, reason) in enumerate(_SEED_ROUND_TRIPS):
+        shares = base_shares * factor
+        buy_time = _seed_clock(minute)
+        minute += 3
+        sell_time = _seed_clock(minute)
+        minute += 4
+        entry_score = 70 + (i * 2) % 25
+        pnl = round((exit_ - entry) * shares, 2)
+        risk_pct = round(shares * entry / starting_capital * 100, 1)
+        log.insert(0, {
+            "time": buy_time, "action": "BUY", "ticker": ticker,
+            "price": entry, "shares": shares, "score": entry_score,
+            "reason": f"score {entry_score} · {risk_pct}% risk", "pnl": 0.0,
+        })
+        log.insert(0, {
+            "time": sell_time, "action": "SELL", "ticker": ticker,
+            "price": exit_, "shares": shares, "score": max(40, entry_score - 12),
+            "reason": reason, "pnl": pnl,
+        })
+    return log
+
+
+def build_seed_equity_curve(trade_log: list,
+                            starting_capital: float = STARTING_CAPITAL) -> list:
+    """Equity curve: cumulative realized P&L over time (oldest → newest)."""
+    curve = [{"time": "09:30", "value": starting_capital}]
+    running = starting_capital
+    for t in reversed(trade_log):
+        if t["action"] == "SELL":
+            running = round(running + t["pnl"], 2)
+            curve.append({"time": t["time"], "value": running})
+    return curve
+
+
+def seed_warm_start() -> bool:
+    """Populate an illustrative ledger so the Edge panel + equity curve start
+    warm. No-op (returns False) if the log already has trades."""
+    with _lock:
+        if _state.trade_log:
+            return False
+        capital = _state.starting_capital
+        log = build_seed_trade_log(capital)
+        _state.trade_log = log
+        _state.equity_curve = build_seed_equity_curve(log, capital)
+        _state.total_pnl = round(sum(t["pnl"] for t in log if t["action"] == "SELL"), 2)
+        _state.stats = _compute_trade_stats(log)
+    logger.info("Warm-started bot with %d illustrative trades", len(log))
+    return True
+
+
 def _get_composite_score(analysis: dict) -> float:
     """Extract composite score from analyze_ticker response. Returns 0.0 on any error."""
     if "error" in analysis:
@@ -405,8 +503,17 @@ def _sell_position(portfolio_id: str, ticker: str, pos: dict, reason: str) -> bo
         return False
 
 
-def _check_exits(portfolio_id: str, stop_event: threading.Event) -> None:
+def _check_exits(
+    portfolio_id: str,
+    batch_scores: dict,
+    stop_event: threading.Event,
+) -> None:
     """Exit engine — score + price triggers, whichever fires first.
+
+    Reads each held position's fresh score and price from *batch_scores* (the
+    single scan_universe call for this cycle, which includes held symbols). Only
+    falls back to a per-ticker ``analyze_ticker`` when a held name is missing
+    from the batch (rare), so the common case costs zero extra round-trips.
 
     Exit triggers (checked in order):
     1. HARD STOP: price dropped 5% from entry — non-negotiable capital protection
@@ -415,6 +522,7 @@ def _check_exits(portfolio_id: str, stop_event: threading.Event) -> None:
     4. PROFIT TAKING: score fading 15%+ while position is green
     5. OUTLIER LOSS: loss exceeds 2 standard deviations (cut the outlier)
     """
+    batch_scores = batch_scores or {}
     with _lock:
         positions = dict(_state.open_positions)
         current_stats = _state.stats
@@ -422,13 +530,18 @@ def _check_exits(portfolio_id: str, stop_event: threading.Event) -> None:
     for ticker, pos in positions.items():
         if stop_event.is_set():
             return
-        analysis = analyze_ticker(ticker)
-        current_score = _get_composite_score(analysis)
-        current_price = (
-            analysis.get("price") or pos["entry_price"]
-            if "error" not in analysis
-            else pos["entry_price"]
-        )
+        info = batch_scores.get(ticker.upper())
+        if info and info.get("price"):
+            current_score = info["score"]
+            current_price = float(info["price"])
+        else:
+            analysis = analyze_ticker(ticker)
+            current_score = _get_composite_score(analysis)
+            current_price = (
+                analysis.get("price") or pos["entry_price"]
+                if "error" not in analysis
+                else pos["entry_price"]
+            )
 
         # Update position tracking
         peak_price = max(pos.get("peak_price", pos["entry_price"]), current_price)
@@ -522,40 +635,80 @@ def _retry_pending_sells(portfolio_id: str, stop_event: threading.Event) -> None
                 })
 
 
-def _build_dynamic_universe() -> list[str]:
-    """Build a broad, ordered ticker pool from multiple sources.
+def _catalyst_bonus(vol_ratio: float, gap_pct: float, anomaly_score: float) -> float:
+    """Map raw scanner signals to a bounded score bonus (0..CATALYST_BONUS_MAX).
+
+    Event-driven catalysts are exactly what a scalp bot should lean into, so a
+    name surfacing on a volume surge / open gap / anomaly gets a few points of
+    lift on top of its composite score.
+    """
+    bonus = 0.0
+    if vol_ratio > 2:
+        bonus += min((vol_ratio - 2) * 1.5, 4.0)   # 2x→0, 4.7x→4
+    bonus += min(abs(gap_pct) / 2.0, 4.0)           # 2% gap→1, 8%+→4
+    bonus += min(anomaly_score / 3.0, 6.0)          # anomaly total_score → up to 6
+    return round(min(bonus, CATALYST_BONUS_MAX), 1)
+
+
+def _build_dynamic_universe() -> tuple[list[str], dict[str, float]]:
+    """Build a broad, ordered ticker pool plus a per-symbol catalyst bonus.
 
     Sources (in priority order — most actionable first):
     1. MCP scanners — anomalies, volume leaders, gap movers (event-driven catalysts)
     2. RSS ticker_cache — every ticker the news is talking about right now
     3. Seed tickers — small fallback if everything else is empty
 
-    Returns up to MAX_UNIVERSE_SIZE symbols — the full pool. _scan_candidates
-    shuffles it and _score_candidates scores SCORE_CANDIDATES_LIMIT per cycle, so
-    over successive cycles the bot rotates across the entire pool (it can trade
-    any ticker the news surfaces) without blowing the per-cycle time budget.
+    Returns ``(symbols, catalyst_map)``. ``symbols`` is up to MAX_UNIVERSE_SIZE
+    tickers; ``catalyst_map`` is ``{symbol: bonus}`` distilled from the scanner
+    payloads (the rich data the scanners already fetched, previously discarded).
     """
     ordered: list[str] = []
     seen: set = set()
+    # Raw signals per symbol, merged across the three scanners.
+    sig: dict[str, dict] = {}
 
     def _add(sym: str) -> None:
         if sym and sym not in seen:
             seen.add(sym)
             ordered.append(sym)
 
-    # 1. MCP scanners (no symbols arg = server picks its own 50-ticker universe)
-    for scanner, key in [
-        (scan_anomalies, "anomalies"),
-        (scan_volume_leaders, "leaders"),
-        (scan_gap_movers, "movers"),
-    ]:
-        try:
-            result = scanner()
-            if "error" not in result:
-                for item in result.get(key, []):
-                    _add(item.get("symbol", ""))
-        except Exception as e:
-            logger.debug("Scanner %s failed: %s", scanner.__name__, e)
+    def _sig(sym: str) -> dict:
+        return sig.setdefault(sym, {"vol_ratio": 0.0, "gap_pct": 0.0, "anomaly_score": 0.0})
+
+    # 1. MCP scanners (no symbols arg = server picks its own 50-ticker universe).
+    #    Capture the catalyst payload, not just the symbol.
+    try:
+        res = scan_anomalies()
+        if "error" not in res:
+            for item in res.get("anomalies", []):
+                s = item.get("symbol", "")
+                _add(s)
+                if s:
+                    _sig(s.upper())["anomaly_score"] = float(item.get("total_score", 0) or 0)
+    except Exception as e:
+        logger.debug("scan_anomalies failed: %s", e)
+
+    try:
+        res = scan_volume_leaders()
+        if "error" not in res:
+            for item in res.get("leaders", []):
+                s = item.get("symbol", "")
+                _add(s)
+                if s:
+                    _sig(s.upper())["vol_ratio"] = float(item.get("ratio", 0) or 0)
+    except Exception as e:
+        logger.debug("scan_volume_leaders failed: %s", e)
+
+    try:
+        res = scan_gap_movers()
+        if "error" not in res:
+            for item in res.get("movers", []):
+                s = item.get("symbol", "")
+                _add(s)
+                if s:
+                    _sig(s.upper())["gap_pct"] = float(item.get("gap_pct", 0) or 0)
+    except Exception as e:
+        logger.debug("scan_gap_movers failed: %s", e)
 
     # 2. RSS news mentions — fill remaining slots with what the news is buzzing about
     try:
@@ -574,20 +727,26 @@ def _build_dynamic_universe() -> list[str]:
     if not ordered:
         ordered = list(_SEED_UNIVERSE)
 
-    return ordered[:MAX_UNIVERSE_SIZE]
+    catalyst_map = {
+        sym: _catalyst_bonus(s["vol_ratio"], s["gap_pct"], s["anomaly_score"])
+        for sym, s in sig.items()
+    }
+    catalyst_map = {sym: b for sym, b in catalyst_map.items() if b > 0}
+    return ordered[:MAX_UNIVERSE_SIZE], catalyst_map
 
 
-def _scan_candidates(stop_event: threading.Event) -> list:
-    """Build the dynamic universe and return shuffled, unheld candidates.
+def _scan_candidates(stop_event: threading.Event) -> tuple[list, dict]:
+    """Build the dynamic universe and return ``(candidates, catalyst_map)``.
 
-    The expensive part — actually scoring each ticker — happens in
-    _score_candidates via analyze_ticker (~1s/symbol). We deliberately skip a
-    scan_universe pre-rank: it re-scores the same tickers with a slower batch
-    call (~3s/symbol) that times out on any universe larger than ~10.
+    ``candidates`` are shuffled, unheld symbols (so the bot rotates across the
+    whole pool over successive cycles). Scoring itself is a single batched
+    ``scan_universe`` call in _run_cycle — far faster than the old per-ticker
+    ``analyze_ticker`` loop, and (crucially) it ranks each name against real
+    peers instead of against itself, so scores actually differentiate.
     """
-    universe = _build_dynamic_universe()
+    universe, catalyst_map = _build_dynamic_universe()
     if stop_event.is_set():
-        return []
+        return [], {}
 
     with _lock:
         held = set(_state.open_positions.keys()) | _state.pending_sells
@@ -601,7 +760,40 @@ def _scan_candidates(stop_event: threading.Event) -> list:
         candidates.append(sym)
     # Shuffle so the bot doesn't always evaluate the same first N tickers
     random.shuffle(candidates)
-    return candidates
+    return candidates, catalyst_map
+
+
+def _score_universe_batch(symbols: list[str]) -> dict[str, dict]:
+    """Batch-score *symbols* in one ``scan_universe`` call.
+
+    Returns ``{SYMBOL: {"score": float, "price": float|None}}``. This is the
+    right MCP tool for ranking: the server computes momentum/valuation
+    percentiles across the whole batch (real peer context), and now also
+    returns the latest price so the bot can size positions and run price-based
+    exits from this single call — no per-ticker round-trips.
+    """
+    syms = list(dict.fromkeys(s.upper() for s in symbols if s))
+    if not syms:
+        return {}
+    result = scan_universe(syms)
+    out: dict[str, dict] = {}
+    if "error" in result:
+        logger.warning("scan_universe failed: %s", result.get("error"))
+        return out
+    for row in result.get("scores", []):
+        sym = row.get("symbol")
+        if not sym:
+            continue
+        try:
+            score = float(row.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        price = row.get("price")
+        out[sym.upper()] = {
+            "score": score,
+            "price": float(price) if isinstance(price, (int, float)) else None,
+        }
+    return out
 
 
 def _rss_sentiment_map() -> dict:
@@ -625,12 +817,19 @@ def _rss_sentiment_map() -> dict:
     return out
 
 
-def _score_candidates(candidates: list, stop_event: threading.Event) -> list:
-    """Score candidates and return [{ticker, score, price, ...}] sorted by score.
+def _score_candidates(
+    candidates: list,
+    batch_scores: dict,
+    catalyst_map: dict | None,
+    stop_event: threading.Event,
+) -> list:
+    """Rank candidates from pre-computed batch scores. Returns sorted list.
 
-    The MCP composite score is blended with MarketPulse RSS sentiment (when the
-    bridge is enabled). Re-entry gate: a recently-sold ticker must score
-    REENTRY_SCORE_BOOST points above its sell score to re-enter.
+    Each candidate's composite ``scan_universe`` score is blended with:
+      - MarketPulse RSS sentiment tilt (when the bridge is enabled), and
+      - an event-driven catalyst bonus (volume surge / gap / anomaly).
+    Re-entry gate: a recently-sold ticker must score REENTRY_SCORE_BOOST points
+    above its sell score to re-enter.
     """
     with _lock:
         sell_hist = dict(_state.sell_history)
@@ -638,18 +837,22 @@ def _score_candidates(candidates: list, stop_event: threading.Event) -> list:
         use_sentiment = _state.sentiment_bridge
 
     tilt_map = _rss_sentiment_map() if use_sentiment else {}
+    catalyst_map = catalyst_map or {}
 
     scored = []
-    for sym in candidates[:SCORE_CANDIDATES_LIMIT]:
+    for sym in candidates:
         if stop_event.is_set():
             return scored
-        analysis = analyze_ticker(sym)
-        base = _get_composite_score(analysis)
+        info = batch_scores.get(sym.upper())
+        if not info:
+            continue
+        base = info["score"]
         if base <= 0:
             continue
 
         tilt = tilt_map.get(sym.upper(), 0.0)
-        score = max(0.0, min(100.0, base + tilt))
+        catalyst = catalyst_map.get(sym.upper(), 0.0)
+        score = max(0.0, min(100.0, base + tilt + catalyst))
         if score < min_score:
             continue
 
@@ -663,11 +866,11 @@ def _score_candidates(candidates: list, stop_event: threading.Event) -> list:
                 )
                 continue
 
-        price = analysis.get("price") if "error" not in analysis else None
+        price = info.get("price")
         if price and float(price) > 0:
             scored.append({
                 "ticker": sym, "score": score, "price": float(price),
-                "base_score": base, "sentiment_tilt": tilt,
+                "base_score": base, "sentiment_tilt": tilt, "catalyst": catalyst,
             })
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored
@@ -730,13 +933,21 @@ def _enter_positions(
         if dollar_amount <= 0:
             continue
 
-        shares = int(dollar_amount / candidate["price"])
+        price = candidate["price"]
+        shares = int(dollar_amount / price)
         if shares < 1:
-            continue
+            # Kelly allocation rounded to zero shares — common on a $10k account
+            # where 1% (~$80) can't buy one share of a $150+ name. Buy a single
+            # share if it still fits the per-trade cap, so the bot can actually
+            # take positions in pricier tickers instead of only cheap ones.
+            if price <= portfolio_value * max_risk and price <= remaining_cash:
+                shares = 1
+            else:
+                continue
         # Don't spend more than available cash
-        cost = shares * candidate["price"]
+        cost = shares * price
         if cost > remaining_cash:
-            shares = int(remaining_cash / candidate["price"])
+            shares = int(remaining_cash / price)
             if shares < 1:
                 continue
 
@@ -840,12 +1051,28 @@ def _run_cycle(portfolio_id: str, stop_event: threading.Event) -> bool:
     _retry_pending_sells(portfolio_id, stop_event)
     if stop_event.is_set():
         return mcp_alive
-    _check_exits(portfolio_id, stop_event)
+
+    candidates, catalyst_map = _scan_candidates(stop_event)
     if stop_event.is_set():
         return mcp_alive
-    candidates = _scan_candidates(stop_event)
-    if candidates:
-        scored = _score_candidates(candidates, stop_event)
+
+    # One batched scan_universe call ranks held positions and this cycle's
+    # candidate slice together, against real peers — and returns prices. Both
+    # the exit engine and the entry engine read from it, so a full cycle makes a
+    # single scoring round-trip instead of ~45 per-ticker calls.
+    with _lock:
+        held = list(_state.open_positions.keys())
+    to_score = candidates[:SCORE_CANDIDATES_LIMIT]
+    batch_scores = _score_universe_batch(held + to_score)
+    if stop_event.is_set():
+        return mcp_alive
+
+    _check_exits(portfolio_id, batch_scores, stop_event)
+    if stop_event.is_set():
+        return mcp_alive
+
+    if to_score:
+        scored = _score_candidates(to_score, batch_scores, catalyst_map, stop_event)
         if not stop_event.is_set():
             _enter_positions(portfolio_id, scored, high_vix, stop_event)
     else:
@@ -884,6 +1111,12 @@ class BotEngine:
             else:
                 logger.error("Portfolio creation failed: %s", result["error"])
                 return
+
+        # Warm start: on a cold account (no prior/seeded trades), populate an
+        # illustrative ledger so the Edge panel and equity curve are alive
+        # immediately while the first live cycle fills real positions.
+        if _state.warm_start and not _state.trade_log:
+            seed_warm_start()
 
         self._stop_event.clear()
         with _lock:

@@ -11,6 +11,6 @@ anthropic>=0.40.0
 feedparser>=6.0.0
 yfinance>=0.2.40
 curl_cffi>=0.7.0
-financial-mcp-server>=0.1.10
+financial-mcp-server>=0.1.11
 mcp[cli]
 anyio

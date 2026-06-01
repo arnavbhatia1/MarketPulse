@@ -375,9 +375,16 @@ with st.expander("⚙ Bot Settings", expanded=not _bs.is_running):
         "Blend MarketPulse news sentiment into scores (the two-tab bridge)",
         value=_bs.sentiment_bridge, key="cfg_bridge",
     )
+    _warm = st.checkbox(
+        "Warm-start the Edge panel with illustrative history on a cold start",
+        value=_bs.warm_start, key="cfg_warm", disabled=_bs.is_running,
+        help="Populates win-rate/EV/Kelly and an equity curve immediately. "
+             "Turn off to begin from a truly empty $0-history account.",
+    )
     # Apply to live bot state
     if not _bs.is_running:
         _bs.starting_capital = float(_cap)
+        _bs.warm_start = _warm
     _bs.max_positions = int(_maxpos)
     _bs.min_score = float(_minsc)
     _bs.max_risk_per_trade = _riskcap / 100.0
@@ -601,7 +608,10 @@ def _bot_live_panel():
     elif state.is_running:
         st.info("Bot is starting — creating portfolio...")
     else:
-        st.caption("Click **Start Bot** to begin autonomous paper trading with $10,000.")
+        st.caption(
+            f"Click **Start Bot** to begin autonomous paper trading with "
+            f"${state.starting_capital:,.0f}."
+        )
 
 
 _bot_live_panel()

@@ -89,11 +89,13 @@ MarketPulse/
 
 Autonomous paper-trading bot built on probability math — thinks like a casino, not a gambler. Runs continuous cycles with a 60s pause between them (MCP scores need time to update). On MCP failure it backs off exponentially (10s→300s) and auto-stops after 10 consecutive failures.
 
-**Cycle:** detect regime → check VIX → retry pending sells → smart exits → build dynamic universe → score candidates → enter/rotate positions → recompute stats → snapshot portfolio (also persists ledger)
+**Cycle:** detect regime → check VIX → retry pending sells → build dynamic universe → **one batched `scan_universe`** over held + candidate symbols → smart exits → score/enter/rotate positions → recompute stats → snapshot portfolio (also persists ledger)
 
-**Dynamic universe:** each cycle is built from MCP scanners (anomalies + volume leaders + gap movers — event-driven catalysts) plus the news-mentioned tickers from the RSS `ticker_cache` — a pool of up to 250 symbols. The pool is shuffled and the top `SCORE_CANDIDATES_LIMIT` (25) are scored per cycle, so over successive cycles the bot rotates across every ticker the news surfaces (it can trade any of them) without blowing the per-cycle time budget. Scoring runs ~1s/symbol via `analyze_ticker`; there is intentionally no `scan_universe` pre-rank (it costs ~3s/symbol and times out on large universes).
+**Dynamic universe:** each cycle is built from MCP scanners (anomalies + volume leaders + gap movers — event-driven catalysts) plus the news-mentioned tickers from the RSS `ticker_cache` — a pool of up to 250 symbols. The pool is shuffled and the top `SCORE_CANDIDATES_LIMIT` (25) are scored per cycle, so over successive cycles the bot rotates across every ticker the news surfaces. The scanners' rich payloads (volume ratio, gap %, anomaly score) are distilled into a per-symbol **catalyst bonus** (≤10 pts, `_catalyst_bonus`) that lifts event-driven names — data the bot previously fetched and discarded.
 
-**Sentiment bridge:** when enabled (default), each candidate's MCP composite score is blended with MarketPulse RSS sentiment — `tilt = (bullish_ratio - bearish_ratio) × 10`, clamped to ±10 points. This is what lets the news-sentiment page influence what the bot trades; the tilt appears in the buy reason (e.g. "score 78 · news +6").
+**Scoring — the right tool is `scan_universe`, not per-ticker `analyze_ticker`.** A single batched `scan_universe` call ranks the cycle's candidates *and* held positions against real peers (momentum/valuation percentiles + sector medians computed across the whole batch) and returns each symbol's price (financial-mcp ≥0.1.11). Per-ticker `analyze_ticker` scores each name against a peer set of one, so every percentile collapses to ~50 and scores barely differentiate (measured σ≈2.7 vs batch σ≈10) — it can't tell a good ticker from a bad one. The batch call is also ~0.34s/symbol in one round-trip, so it's both more accurate and faster than the old per-candidate loop. The exit engine reads price+score from the same batch; only a held name missing from the batch falls back to `analyze_ticker`.
+
+**Score blend:** a candidate's final score = batch `scan_universe` composite + **sentiment tilt** + **catalyst bonus**. Sentiment tilt (when the bridge is enabled, default) = `(bullish_ratio - bearish_ratio) × 10`, clamped to ±10, letting the news-sentiment page influence what the bot trades (shown in the buy reason, e.g. "score 78 · news +6"). The catalyst bonus (≤10) rewards volume surges / gaps / anomalies from the scanners.
 
 **Quant Decision Engine:**
 - **Expected Value (EV):** `EV = (WinRate × AvgWin) - (LossRate × AvgLoss)` — computed from actual closed trades every cycle. Only sizes up when EV is positive.
@@ -103,6 +105,7 @@ Autonomous paper-trading bot built on probability math — thinks like a casino,
 - **Conviction scaling:** higher MCP scores → proportionally more capital (score/100 × base risk).
 - **Hard 2% cap:** never risk more than 2% of portfolio per trade, regardless of Kelly.
 - **Conservative bootstrap:** 1% per trade until 10+ closed trades provide enough data for Kelly (Law of Large Numbers).
+- **Single-share floor:** when a Kelly allocation rounds to zero shares, buy one share if a single share still fits the per-trade cap — so the bot can take positions in pricier names instead of only penny stocks. The default account is **$100,000** (standard paper size): at 2%/trade that's ~$2k per position, enough for real share counts across all price ranges (a $10k account can't hold a $300–600 mega-cap inside a 2% cap).
 
 **Smart exits (5 triggers, checked in order):**
 1. Hard stop — price dropped 5% from entry (non-negotiable capital protection)
@@ -115,9 +118,9 @@ Autonomous paper-trading bot built on probability math — thinks like a casino,
 
 **Position rotation:** When at 20 max positions, sells weakest holding if a new candidate scores 10+ points higher.
 
-**Persistence:** `_snapshot_portfolio` writes the portfolio id + realized trade log to `data/bot_state.json` each cycle; `load_state()` restores it once on page load so the bot resumes warm after a Streamlit restart. `scripts/seed_demo.py` writes an illustrative warm-start ledger for demos.
+**Persistence & warm start:** `_snapshot_portfolio` writes the portfolio id + realized trade log to `data/bot_state.json` each cycle; `load_state()` restores it once on page load so the bot resumes warm after a Streamlit restart. On a *cold* start (no prior/seeded trades and `warm_start` on, the default), `BotEngine.start()` calls `seed_warm_start()` to populate an illustrative ledger so the Edge panel and equity curve are alive immediately while the first live cycle fills real positions. The seed scales to the chosen capital (`build_seed_trade_log`/`build_seed_equity_curve`, shared with `scripts/seed_demo.py`).
 
-**Configurable params:** the "⚙ Bot Settings" panel exposes starting capital (edit while stopped), max positions, min score, max risk/trade %, and the sentiment-bridge toggle. These live on `BotState` (`max_positions`, `min_score`, `max_risk_per_trade`, `starting_capital`, `sentiment_bridge`) and are read by the cycle functions.
+**Configurable params:** the "⚙ Bot Settings" panel exposes starting capital (edit while stopped), max positions, min score, max risk/trade %, the sentiment-bridge toggle, and the warm-start toggle. These live on `BotState` (`max_positions`, `min_score`, `max_risk_per_trade`, `starting_capital`, `sentiment_bridge`, `warm_start`) and are read by the cycle functions.
 
 **Dashboard:** `@st.fragment(run_every=1)` — live-updating panel with:
 - Portfolio value, P&L, open positions count
