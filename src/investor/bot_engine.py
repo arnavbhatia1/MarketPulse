@@ -95,6 +95,51 @@ _STATE_PATH = os.path.join(
 )
 _loaded = False  # guard so load_state() only reads the file once per process
 
+# ---------------------------------------------------------------------------
+# Short TTL cache + regime policy
+# ---------------------------------------------------------------------------
+
+# The event scanners (anomalies / volume / gap) hit yfinance with un-cached
+# batch downloads (~9s/cycle) and barely change over a minute, so we reuse their
+# results for a short window. (regime + scan_universe are already cached
+# server-side for 120s, so they don't need client caching.)
+SCANNER_TTL = 150  # seconds
+_ttl_cache: dict = {}
+
+
+def _cached_scanner(key: str, producer):
+    """Run *producer* but reuse a recent successful result within SCANNER_TTL.
+
+    Errors are never cached, so a failed scan retries on the next cycle.
+    """
+    now = time.time()
+    hit = _ttl_cache.get(key)
+    if hit is not None and now - hit[0] < SCANNER_TTL:
+        return hit[1]
+    value = producer()
+    if isinstance(value, dict) and "error" not in value:
+        _ttl_cache[key] = (now, value)
+    return value
+
+
+# Regime policy — a good trader presses in strength and defends in weakness.
+# risk_factor scales position size; min_score_bump raises the entry bar (CRASH's
+# +100 effectively halts new longs while exits keep running).
+_REGIME_RISK = {
+    "BULL": 1.0, "SIDEWAYS": 0.85, "HIGH_VOLATILITY": 0.6, "BEAR": 0.5, "CRASH": 0.0,
+}
+_REGIME_MIN_SCORE_BUMP = {
+    "BULL": 0.0, "SIDEWAYS": 3.0, "HIGH_VOLATILITY": 6.0, "BEAR": 10.0, "CRASH": 100.0,
+}
+
+
+def _regime_adjustments(regime: dict) -> tuple[float, float]:
+    """Return ``(risk_factor, min_score_bump)`` for *regime*. Neutral on error."""
+    if not regime or "error" in regime:
+        return 1.0, 0.0
+    name = str(regime.get("regime", "")).upper()
+    return _REGIME_RISK.get(name, 1.0), _REGIME_MIN_SCORE_BUMP.get(name, 0.0)
+
 
 # ---------------------------------------------------------------------------
 # Trade Statistics — the math that matters
@@ -205,15 +250,17 @@ def _compute_trade_stats(trade_log: list) -> TradeStats:
 
 def _compute_position_size(score: float, high_vix: bool, stats: TradeStats,
                            portfolio_value: float,
-                           max_risk: float = MAX_RISK_PER_TRADE) -> float:
+                           max_risk: float = MAX_RISK_PER_TRADE,
+                           regime_factor: float = 1.0) -> float:
     """Calculate dollar amount to risk on this trade.
 
     Sizing hierarchy:
     1. If enough trade history: use half-Kelly from actual statistics
     2. If not enough history: use conservative 1% of portfolio
     3. Apply VIX discount if markets are volatile
-    4. Cap at 2% of portfolio (professional standard)
-    5. Scale by score conviction (higher score = closer to full size)
+    4. Apply the market-regime factor (press in BULL, shrink in BEAR/volatile)
+    5. Cap at 2% of portfolio (professional standard)
+    6. Scale by score conviction (higher score = closer to full size)
 
     Returns dollar amount to allocate (not percentage).
     """
@@ -239,6 +286,10 @@ def _compute_position_size(score: float, high_vix: bool, stats: TradeStats,
     # VIX discount — high volatility means smaller bets
     if high_vix:
         base_risk *= 0.5
+
+    # Market-regime factor — press size in a bull, shrink in bear/volatile,
+    # zero in a crash (no new longs).
+    base_risk *= regime_factor
 
     # Score conviction scaling: score 60 = 60% of base size, score 100 = 100%
     conviction = score / 100.0
@@ -636,18 +687,24 @@ def _retry_pending_sells(portfolio_id: str, stop_event: threading.Event) -> None
 
 
 def _catalyst_bonus(vol_ratio: float, gap_pct: float, anomaly_score: float) -> float:
-    """Map raw scanner signals to a bounded score bonus (0..CATALYST_BONUS_MAX).
+    """Map raw scanner signals to a *directional* score bonus (±CATALYST_BONUS_MAX).
 
-    Event-driven catalysts are exactly what a scalp bot should lean into, so a
-    name surfacing on a volume surge / open gap / anomaly gets a few points of
-    lift on top of its composite score.
+    This bot is long-only, so direction matters: an up-gap on heavy volume is a
+    momentum entry, but a down-gap is a falling knife to avoid. Volume confirms
+    interest (counts more when the gap is up); anomalies add mild lift.
     """
-    bonus = 0.0
-    if vol_ratio > 2:
-        bonus += min((vol_ratio - 2) * 1.5, 4.0)   # 2x→0, 4.7x→4
-    bonus += min(abs(gap_pct) / 2.0, 4.0)           # 2% gap→1, 8%+→4
-    bonus += min(anomaly_score / 3.0, 6.0)          # anomaly total_score → up to 6
-    return round(min(bonus, CATALYST_BONUS_MAX), 1)
+    # Gap: up rewarded (0..+4), down penalised (0..-5) — don't buy the knife.
+    if gap_pct >= 0:
+        gap = min(gap_pct / 2.0, 4.0)
+    else:
+        gap = max(gap_pct / 2.0, -5.0)
+    # Volume surge: liquidity/interest. Full weight when gapping up, half when not.
+    vol = min((vol_ratio - 2) * 1.5, 4.0) if vol_ratio > 2 else 0.0
+    vol *= 1.0 if gap_pct >= 0 else 0.5
+    # Anomaly activity: modest, direction-agnostic.
+    anom = min(anomaly_score / 3.0, 3.0)
+    bonus = gap + vol + anom
+    return round(max(-CATALYST_BONUS_MAX, min(bonus, CATALYST_BONUS_MAX)), 1)
 
 
 def _build_dynamic_universe() -> tuple[list[str], dict[str, float]]:
@@ -678,7 +735,7 @@ def _build_dynamic_universe() -> tuple[list[str], dict[str, float]]:
     # 1. MCP scanners (no symbols arg = server picks its own 50-ticker universe).
     #    Capture the catalyst payload, not just the symbol.
     try:
-        res = scan_anomalies()
+        res = _cached_scanner("anomalies", scan_anomalies)
         if "error" not in res:
             for item in res.get("anomalies", []):
                 s = item.get("symbol", "")
@@ -689,7 +746,7 @@ def _build_dynamic_universe() -> tuple[list[str], dict[str, float]]:
         logger.debug("scan_anomalies failed: %s", e)
 
     try:
-        res = scan_volume_leaders()
+        res = _cached_scanner("leaders", scan_volume_leaders)
         if "error" not in res:
             for item in res.get("leaders", []):
                 s = item.get("symbol", "")
@@ -700,7 +757,7 @@ def _build_dynamic_universe() -> tuple[list[str], dict[str, float]]:
         logger.debug("scan_volume_leaders failed: %s", e)
 
     try:
-        res = scan_gap_movers()
+        res = _cached_scanner("movers", scan_gap_movers)
         if "error" not in res:
             for item in res.get("movers", []):
                 s = item.get("symbol", "")
@@ -731,7 +788,7 @@ def _build_dynamic_universe() -> tuple[list[str], dict[str, float]]:
         sym: _catalyst_bonus(s["vol_ratio"], s["gap_pct"], s["anomaly_score"])
         for sym, s in sig.items()
     }
-    catalyst_map = {sym: b for sym, b in catalyst_map.items() if b > 0}
+    catalyst_map = {sym: b for sym, b in catalyst_map.items() if b != 0}
     return ordered[:MAX_UNIVERSE_SIZE], catalyst_map
 
 
@@ -881,12 +938,16 @@ def _enter_positions(
     scored: list,
     high_vix: bool,
     stop_event: threading.Event,
+    regime_factor: float = 1.0,
+    min_score_bump: float = 0.0,
 ) -> None:
     """Enter positions using Kelly-based sizing with rotation.
 
     Casino mindset: many small bets sized by mathematical edge.
     Position size comes from _compute_position_size (Kelly + safety rails),
-    not fixed percentage tiers.
+    not fixed percentage tiers. The market regime raises the entry bar
+    (*min_score_bump*) and scales size (*regime_factor*) — defend in weak
+    markets, press in strong ones.
     """
     with _lock:
         remaining_cash = _state.portfolio_cash
@@ -894,10 +955,16 @@ def _enter_positions(
         current_stats = _state.stats
         max_positions = _state.max_positions
         max_risk = _state.max_risk_per_trade
+        effective_min = _state.min_score + min_score_bump
 
     for candidate in scored:
         if stop_event.is_set():
             return
+
+        # Regime gate — in tougher regimes only higher-conviction names pass
+        # (CRASH's +100 bump halts new longs entirely).
+        if candidate["score"] < effective_min:
+            continue
 
         with _lock:
             at_max = len(_state.open_positions) >= max_positions
@@ -926,9 +993,10 @@ def _enter_positions(
                 with _lock:
                     remaining_cash = _state.portfolio_cash
 
-        # Kelly-based position sizing
+        # Kelly-based position sizing (regime-scaled)
         dollar_amount = _compute_position_size(
-            candidate["score"], high_vix, current_stats, portfolio_value, max_risk
+            candidate["score"], high_vix, current_stats, portfolio_value, max_risk,
+            regime_factor=regime_factor,
         )
         if dollar_amount <= 0:
             continue
@@ -1044,8 +1112,12 @@ def _run_cycle(portfolio_id: str, stop_event: threading.Event) -> bool:
 
     regime = detect_market_regime()
     mcp_alive = "error" not in regime
+    regime_factor, min_score_bump = _regime_adjustments(regime)
     if mcp_alive:
-        logger.info("Market regime: %s (score %s)", regime.get("regime"), regime.get("score"))
+        logger.info(
+            "Market regime: %s (score %s) → size ×%.2f, entry bar +%.0f",
+            regime.get("regime"), regime.get("score"), regime_factor, min_score_bump,
+        )
 
     high_vix = _check_vix()
     _retry_pending_sells(portfolio_id, stop_event)
@@ -1074,7 +1146,8 @@ def _run_cycle(portfolio_id: str, stop_event: threading.Event) -> bool:
     if to_score:
         scored = _score_candidates(to_score, batch_scores, catalyst_map, stop_event)
         if not stop_event.is_set():
-            _enter_positions(portfolio_id, scored, high_vix, stop_event)
+            _enter_positions(portfolio_id, scored, high_vix, stop_event,
+                             regime_factor=regime_factor, min_score_bump=min_score_bump)
     else:
         logger.warning("No candidates — skipping entry phase")
     _snapshot_portfolio(portfolio_id)

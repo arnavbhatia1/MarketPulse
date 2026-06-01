@@ -97,6 +97,67 @@ class TestComputePositionSize:
         assert size <= 200  # 2% of 10k
 
 
+class TestRegimePolicy:
+    def test_bull_is_neutral(self):
+        from src.investor.bot_engine import _regime_adjustments
+        factor, bump = _regime_adjustments({"regime": "BULL"})
+        assert factor == 1.0 and bump == 0.0
+
+    def test_bear_shrinks_and_raises_bar(self):
+        from src.investor.bot_engine import _regime_adjustments
+        factor, bump = _regime_adjustments({"regime": "BEAR"})
+        assert factor < 1.0 and bump > 0
+
+    def test_crash_halts_new_longs(self):
+        from src.investor.bot_engine import _regime_adjustments
+        factor, bump = _regime_adjustments({"regime": "CRASH"})
+        assert factor == 0.0 and bump >= 100
+
+    def test_error_is_neutral(self):
+        from src.investor.bot_engine import _regime_adjustments
+        assert _regime_adjustments({"error": "down"}) == (1.0, 0.0)
+
+    def test_regime_factor_scales_size(self):
+        from src.investor.bot_engine import _compute_position_size, TradeStats
+        stats = TradeStats()
+        full = _compute_position_size(80, False, stats, 100_000, regime_factor=1.0)
+        half = _compute_position_size(80, False, stats, 100_000, regime_factor=0.5)
+        assert half == pytest.approx(full * 0.5)
+
+
+class TestCatalystBonus:
+    def test_up_gap_rewarded(self):
+        from src.investor.bot_engine import _catalyst_bonus
+        assert _catalyst_bonus(1.0, 6.0, 0) > 0
+
+    def test_down_gap_penalised(self):
+        from src.investor.bot_engine import _catalyst_bonus
+        assert _catalyst_bonus(1.0, -6.0, 0) < 0
+
+    def test_volume_adds_on_up_gap(self):
+        from src.investor.bot_engine import _catalyst_bonus
+        no_vol = _catalyst_bonus(1.0, 4.0, 0)
+        with_vol = _catalyst_bonus(4.0, 4.0, 0)
+        assert with_vol > no_vol
+
+
+class TestRegimeEntryGate:
+    def setup_method(self):
+        _reset_state()
+
+    @patch("src.investor.bot_engine.execute_buy", return_value={"status": "executed"})
+    def test_min_score_bump_blocks_entry(self, mock_buy):
+        from src.investor import bot_engine
+        bot_engine._state.portfolio_cash = 100_000.0
+        bot_engine._state.portfolio_value = 100_000.0
+        from src.investor.bot_engine import _enter_positions
+        # A solid 75 candidate is blocked when the regime raises the bar (CRASH).
+        _enter_positions("pid", [{"ticker": "AAA", "score": 75, "price": 50.0}],
+                         False, threading.Event(), regime_factor=0.0, min_score_bump=100)
+        mock_buy.assert_not_called()
+        assert "AAA" not in bot_engine._state.open_positions
+
+
 class TestGetCompositeScore:
     def test_extracts_score(self):
         from src.investor.bot_engine import _get_composite_score
@@ -139,6 +200,7 @@ def _reset_state():
     bot_engine._state.sentiment_bridge = False
     # Disable warm-start seeding so start()/scoring tests run against a clean log.
     bot_engine._state.warm_start = False
+    bot_engine._ttl_cache.clear()  # scanner cache must not leak across tests
     bot_engine._engine._stop_event.set()
     bot_engine._engine._thread = None
 
