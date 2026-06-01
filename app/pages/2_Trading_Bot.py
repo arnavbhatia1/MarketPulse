@@ -250,32 +250,35 @@ if selected_ticker:
             st.caption(f"Rel Strength: {rs:.2f}" if rs is not None else "Rel Strength: N/A")
 
     with col_smart:
-        st.markdown('<div class="smart-money-card">', unsafe_allow_html=True)
-        st.markdown("**Smart Money**")
-        signal_data = _c_smart_money("E-MINI S&P 500")
-        if "error" not in signal_data:
-            sig = signal_data.get("signal", "neutral")
-            sig_color = "#00C853" if sig == "bullish" else ("#FF1744" if sig == "bearish" else "#FFD600")
-            st.markdown(
-                f"CFTC Signal: <span style='color:{sig_color};font-weight:700'>{sig.upper()}</span>",
-                unsafe_allow_html=True,
-            )
-            st.caption(signal_data.get("reason", ""))
-            positioning = _c_futures("E-MINI S&P 500")
-            if "error" not in positioning:
-                reports = positioning.get("reports", [])
-                if reports:
-                    latest = reports[0]
-                    st.plotly_chart(
-                        cftc_positioning_bars(
-                            latest.get("commercial_net", 0),
-                            latest.get("non_commercial_net", 0),
-                        ),
-                        width="stretch",
-                    )
-        else:
-            st.caption("Smart money data unavailable")
-        st.markdown('</div>', unsafe_allow_html=True)
+        # Use a real Streamlit bordered container — a raw <div> split across two
+        # st.markdown calls renders as an empty box (Streamlit closes each block).
+        with st.container(border=True):
+            st.markdown("**Smart Money**")
+            signal_data = _c_smart_money("E-MINI S&P 500")
+            if "error" not in signal_data:
+                sig = signal_data.get("signal", "neutral")
+                sig_color = "#00C853" if sig == "bullish" else ("#FF1744" if sig == "bearish" else "#FFD600")
+                st.markdown(
+                    f"CFTC Signal: <span style='color:{sig_color};font-weight:700'>{sig.upper()}</span>",
+                    unsafe_allow_html=True,
+                )
+                reason = signal_data.get("reason", "")
+                if reason:
+                    st.caption(reason)
+                positioning = _c_futures("E-MINI S&P 500")
+                if "error" not in positioning:
+                    reports = positioning.get("reports", [])
+                    if reports:
+                        latest = reports[0]
+                        st.plotly_chart(
+                            cftc_positioning_bars(
+                                latest.get("commercial_net", 0),
+                                latest.get("non_commercial_net", 0),
+                            ),
+                            width="stretch",
+                        )
+            else:
+                st.caption("Smart money data unavailable")
 
     # -- Catalysts: SEC filings · insider trades · search interest -------------
     with st.expander(f"Catalysts for {selected_ticker} — SEC · Insider · Search Trends"):
