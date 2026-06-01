@@ -15,7 +15,7 @@ class TestWrapperFunctions:
         from src.investor.mcp_client import score_ticker
         result = score_ticker("AAPL")
         assert result["_tool"] == "score_ticker"
-        assert result["_args"] == {"symbol": "AAPL"}
+        assert result["_args"] == {"symbol": "AAPL", "sentiment": ""}
 
     @patch("src.investor.mcp_client.call_tool", side_effect=_mock_call_tool)
     def test_scan_universe_joins_list(self, mock):

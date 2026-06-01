@@ -1,5 +1,6 @@
 import hashlib
 import feedparser
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
@@ -61,27 +62,38 @@ class NewsIngester(BaseIngester):
         Fetch news via Google News RSS (keyword searches) and
         Yahoo Finance RSS (per-ticker feeds). Filters by date range.
         """
-        rows = []
-        seen_urls = set()
-
-        # Google News: one feed per query term
+        # Build the full list of feeds to fetch, then pull them concurrently —
+        # RSS fetching is network-bound, so a thread pool turns a ~50s serial
+        # crawl into a few seconds.
+        feeds: list[tuple[str, str]] = []
         for term in self.query_terms:
-            url = _GOOGLE_NEWS_RSS.format(query=term.replace(' ', '+') + '+stock')
-            rows += self._parse_feed(url, f"google_news_{term[:20]}", seen_urls, start_date, end_date)
-
-        # Yahoo Finance: one feed per ticker
+            feeds.append((
+                _GOOGLE_NEWS_RSS.format(query=term.replace(' ', '+') + '+stock'),
+                f"google_news_{term[:20]}",
+            ))
         for symbol in self.symbols:
-            url = _YAHOO_FINANCE_RSS.format(symbol=symbol)
-            rows += self._parse_feed(url, f"yahoo_{symbol}", seen_urls, start_date, end_date)
-
-        # Additional RSS feeds (CNBC, MarketWatch, etc.)
+            feeds.append((_YAHOO_FINANCE_RSS.format(symbol=symbol), f"yahoo_{symbol}"))
         for feed_info in self.additional_feeds:
             feed_url = feed_info.get('url', '')
-            feed_name = feed_info.get('name', 'extra')
             if feed_url:
-                rows += self._parse_feed(feed_url, feed_name, seen_urls, start_date, end_date)
+                feeds.append((feed_url, feed_info.get('name', 'extra')))
 
-        logger.info(f"News: {len(rows)} articles from RSS feeds")
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            per_feed = pool.map(
+                lambda f: self._parse_feed(f[0], f[1], start_date, end_date), feeds
+            )
+
+        # Global dedup across feeds by normalized URL.
+        rows = []
+        seen_urls = set()
+        for feed_rows in per_feed:
+            for row in feed_rows:
+                if row['url'] in seen_urls:
+                    continue
+                seen_urls.add(row['url'])
+                rows.append(row)
+
+        logger.info(f"News: {len(rows)} articles from {len(feeds)} RSS feeds")
 
         if not rows:
             return self._empty_dataframe()
@@ -89,7 +101,7 @@ class NewsIngester(BaseIngester):
         return self.validate_output(pd.DataFrame(rows))
 
     def _parse_feed(self, feed_url: str, source_slug: str,
-                    seen_urls: set, start_date: datetime, end_date: datetime) -> list:
+                    start_date: datetime, end_date: datetime) -> list:
         rows = []
         try:
             feed = feedparser.parse(feed_url)
@@ -99,8 +111,6 @@ class NewsIngester(BaseIngester):
                     if not url:
                         continue
                     normalized = self._normalize_url(url)
-                    if normalized in seen_urls:
-                        continue
 
                     title = entry.get('title', '')
                     summary = entry.get('summary', '')
@@ -116,7 +126,6 @@ class NewsIngester(BaseIngester):
                     if end_date and ts > end_date:
                         continue
 
-                    seen_urls.add(normalized)
                     url_hash = hashlib.md5(normalized.encode()).hexdigest()[:12]
                     rows.append({
                         'post_id': f"news_{source_slug}_{url_hash}",

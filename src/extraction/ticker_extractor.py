@@ -17,6 +17,11 @@ Challenges in this domain:
 
 import re
 from src.utils.logger import get_logger
+from src.extraction.ticker_universe import (
+    TICKER_UNIVERSE,
+    AMBIGUOUS_TICKERS,
+    COMMON_WORD_NAMES,
+)
 
 logger = get_logger(__name__)
 
@@ -34,33 +39,30 @@ class TickerExtractor:
     """
 
     def __init__(self):
-        self.ticker_map = {
-            'AAPL': 'Apple', 'TSLA': 'Tesla', 'MSFT': 'Microsoft',
-            'GOOG': 'Google', 'GOOGL': 'Google', 'AMZN': 'Amazon',
-            'NVDA': 'NVIDIA', 'META': 'Meta', 'GME': 'GameStop',
-            'AMC': 'AMC', 'SPY': 'S&P 500 ETF', 'QQQ': 'Nasdaq ETF',
-            'PLTR': 'Palantir', 'BB': 'BlackBerry', 'SOFI': 'SoFi',
-            'WISH': 'ContextLogic', 'NFLX': 'Netflix', 'DIS': 'Disney',
-            'AMD': 'AMD', 'INTC': 'Intel', 'JPM': 'JPMorgan',
-            'BAC': 'Bank of America', 'F': 'Ford', 'GE': 'GE',
-            'T': 'AT&T', 'COIN': 'Coinbase', 'HOOD': 'Robinhood',
-            'RIVN': 'Rivian', 'LCID': 'Lucid', 'NIO': 'NIO',
-            'BABA': 'Alibaba', 'TSM': 'TSMC', 'ORCL': 'Oracle',
-            'CRM': 'Salesforce', 'ABNB': 'Airbnb', 'SNAP': 'Snap',
-            'UBER': 'Uber', 'LYFT': 'Lyft', 'SQ': 'Block',
-            'PYPL': 'PayPal', 'V': 'Visa', 'MA': 'Mastercard',
-        }
+        # Source of truth: the bundled ticker universe (symbol -> company name).
+        self.ticker_map = dict(TICKER_UNIVERSE)
 
-        # Tickers that are also common words — require $ prefix to match
-        self.ambiguous_tickers = {'F', 'T', 'V', 'AI', 'ALL', 'IT', 'NOW', 'BB', 'GE'}
+        # Tickers that are also common words — require $ prefix to match.
+        self.ambiguous_tickers = set(AMBIGUOUS_TICKERS)
 
-        self.company_aliases = {
-            'apple': 'Apple', 'tesla': 'Tesla', 'microsoft': 'Microsoft',
-            'google': 'Google', 'alphabet': 'Google', 'amazon': 'Amazon',
-            'nvidia': 'NVIDIA', 'meta': 'Meta', 'facebook': 'Meta',
-            'gamestop': 'GameStop', 'palantir': 'Palantir',
-            'netflix': 'Netflix', 'disney': 'Disney',
-        }
+        # Company-name aliases, auto-derived from the universe so any company in
+        # it is recognized in headlines (the dominant signal in news text).
+        # Skip names that are common English words (match those via $ cashtag) and
+        # very short names (<=2 chars) to avoid false positives.
+        self.company_aliases = {}
+        for symbol, name in self.ticker_map.items():
+            alias = name.lower()
+            if len(alias) <= 2 or alias in COMMON_WORD_NAMES:
+                continue
+            self.company_aliases.setdefault(alias, name)
+
+        # A few extra hand-curated aliases the universe names don't cover.
+        self.company_aliases.update({
+            'alphabet': 'Google', 'facebook': 'Meta', 'meta platforms': 'Meta',
+            'advanced micro devices': 'AMD', 'taiwan semiconductor': 'TSMC',
+            'lucid motors': 'Lucid', 'rivian automotive': 'Rivian',
+            'jp morgan': 'JPMorgan', 'jpmorgan chase': 'JPMorgan',
+        })
 
         self.informal_aliases = {
             'papa musk': 'Tesla', 'elon': 'Tesla',

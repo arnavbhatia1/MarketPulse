@@ -27,6 +27,26 @@ _call_counter = itertools.count()
 _thread: threading.Thread | None = None
 _connected = threading.Event()
 _server_process: subprocess.Popen | None = None
+_reconnect_attempts: int = 0
+_last_reconnect_time: float = 0.0
+
+
+def _server_already_listening() -> bool:
+    """True if something is already accepting connections on the SSE port.
+
+    Lets us skip launching a second server (e.g. when start.bat already started
+    one), which would otherwise fail to bind 8520 and exit with an error.
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(_config["mcp_server"]["url"])
+    host, port = parsed.hostname or "localhost", parsed.port or 8520
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
 
 
 def _start_mcp_server():
@@ -34,6 +54,10 @@ def _start_mcp_server():
     global _server_process
     if _server_process is not None and _server_process.poll() is None:
         return  # already running
+    if _server_already_listening():
+        logger.info("financial-mcp already listening on %s — reusing it",
+                    _config["mcp_server"]["url"])
+        return
 
     cmd = shutil.which("financial-mcp")
     if cmd is None:
@@ -49,17 +73,24 @@ def _start_mcp_server():
         cmd = None  # will use sys.executable below
         logger.info("financial-mcp not on PATH, falling back to python -m financial_mcp.server")
 
+    # financial-mcp defaults to stdio transport; MarketPulse talks to it over
+    # SSE on port 8520, so the server MUST be launched in SSE mode.
     if cmd:
-        launch_cmd = [cmd]
+        launch_cmd = [cmd, "--transport", "sse"]
     else:
         import sys
-        launch_cmd = [sys.executable, "-m", "financial_mcp.server"]
+        launch_cmd = [sys.executable, "-m", "financial_mcp.server", "--transport", "sse"]
+
+    # Belt-and-suspenders: also force SSE via env in case an older build of the
+    # server ignores the flag.
+    env = {**os.environ, "FINANCIAL_MCP_TRANSPORT": "sse"}
 
     logger.info("Auto-starting financial-mcp server: %s", launch_cmd)
     _server_process = subprocess.Popen(
         launch_cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=env,
     )
     # Wait for the server to bind its port
     for _ in range(10):
@@ -105,22 +136,47 @@ def _run_mcp_loop(url: str):
 
 
 def _ensure_connected():
-    """Start MCP server if needed, then connect via background thread."""
-    global _thread
-    if _thread is None or not _thread.is_alive():
-        _start_mcp_server()
-        _connected.clear()
-        url = _config["mcp_server"]["url"]
-        _thread = threading.Thread(target=_run_mcp_loop, args=(url,), daemon=True)
-        _thread.start()
-        timeout = _config["mcp_server"]["timeout"]
-        if not _connected.wait(timeout=timeout):
-            raise ConnectionError("Could not connect to financial-mcp server")
+    """Start MCP server if needed, then connect via background thread.
+
+    Uses exponential backoff between reconnection attempts to avoid
+    hammering a dead server.
+    """
+    global _thread, _reconnect_attempts, _last_reconnect_time
+    if _thread is not None and _thread.is_alive():
+        return
+
+    # Exponential backoff: 2s, 4s, 8s, ... capped at 60s
+    now = time.time()
+    if _reconnect_attempts > 0:
+        backoff = min(2 ** _reconnect_attempts, 60)
+        elapsed = now - _last_reconnect_time
+        if elapsed < backoff:
+            raise ConnectionError(
+                f"MCP reconnect backoff: {backoff - elapsed:.0f}s remaining "
+                f"(attempt {_reconnect_attempts})"
+            )
+    _last_reconnect_time = now
+    _reconnect_attempts += 1
+
+    _start_mcp_server()
+    _connected.clear()
+    url = _config["mcp_server"]["url"]
+    _thread = threading.Thread(target=_run_mcp_loop, args=(url,), daemon=True)
+    _thread.start()
+    timeout = _config["mcp_server"]["timeout"]
+    if not _connected.wait(timeout=timeout):
+        raise ConnectionError("Could not connect to financial-mcp server")
+    # Success — reset backoff
+    _reconnect_attempts = 0
 
 
 def call_tool(tool_name: str, timeout: float | None = None, **kwargs) -> dict:
     """Sync wrapper -- submits tool call to background thread, blocks for result."""
-    _ensure_connected()
+    try:
+        _ensure_connected()
+    except ConnectionError as e:
+        logger.error("MCP connection failed: %s", e)
+        return {"error": str(e)}
     call_id = next(_call_counter)
     _result_queues[call_id] = queue.Queue()
     _call_queue.put((call_id, tool_name, kwargs))
@@ -147,8 +203,10 @@ def is_connected() -> bool:
 
 # -- Scoring & Analysis --------------------------------------------------------
 
-def score_ticker(symbol: str) -> dict:
-    return call_tool("score_ticker", symbol=symbol)
+def score_ticker(symbol: str, sentiment: str = "") -> dict:
+    """Score a ticker. `sentiment` is an optional JSON string (e.g.
+    '{"score": 75}') that the engine blends into the composite score."""
+    return call_tool("score_ticker", symbol=symbol, sentiment=sentiment)
 
 
 def scan_universe(symbols: list[str]) -> dict:
@@ -262,6 +320,20 @@ def scan_gap_movers(symbols: list[str] | None = None) -> dict:
 
 def get_smart_money_signal(market: str) -> dict:
     return call_tool("get_smart_money_signal", market=market)
+
+
+# -- Catalysts (SEC / search trends) ------------------------------------------
+
+def get_sec_filings(symbol: str, filing_type: str = "8-K", count: int = 5) -> dict:
+    return call_tool("get_sec_filings", symbol=symbol, filing_type=filing_type, count=count)
+
+
+def get_insider_trades(symbol: str, days: int = 90) -> dict:
+    return call_tool("get_insider_trades", symbol=symbol, days=days)
+
+
+def get_search_trends(keywords: str, timeframe: str = "today 3-m") -> dict:
+    return call_tool("get_search_trends", keywords=keywords, timeframe=timeframe)
 
 
 def get_futures_positioning(market: str) -> dict:

@@ -1,4 +1,4 @@
-"""Autonomous scalp trading bot engine — probability-based, not prediction-based.
+"""Autonomous momentum + event-driven trading bot — probability-based.
 
 Think like a casino, not a gambler. The edge comes from:
 - Expected Value (EV): only take trades where math favors us
@@ -7,11 +7,17 @@ Think like a casino, not a gambler. The edge comes from:
 - Law of Large Numbers: many small trades > few big bets
 - Variance awareness: drawdowns are normal, don't abandon edge during them
 
+Strategy: momentum rides trends, event-driven catches catalysts.
+Hold as long as the thesis holds. Exit on score decay OR price stops.
+
 Module-level BotState singleton. Background daemon thread runs continuous
 cycles. All trade execution goes through MCP client wrappers.
 """
+import json
 import logging
 import math
+import os
+import random
 import statistics
 import threading
 import time
@@ -26,11 +32,12 @@ from src.investor.mcp_client import (
     execute_sell,
     detect_market_regime,
     get_vix_analysis,
-    scan_universe,
     scan_anomalies,
     scan_volume_leaders,
+    scan_gap_movers,
     analyze_ticker,
 )
+from src.storage.db import load_ticker_cache
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +45,23 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-CYCLE_INTERVAL = 5            # seconds between cycles
+CYCLE_INTERVAL = 60           # seconds between cycles (MCP scores need time to update)
+MAX_CONSECUTIVE_FAILURES = 10 # auto-stop bot after this many failed cycles
+INITIAL_BACKOFF = 10          # seconds before first retry after failure
+MAX_BACKOFF = 300             # cap exponential backoff at 5 minutes
 MAX_POSITIONS = 20
 MIN_SCORE = 60
 EXIT_SCORE_DROP_THRESHOLD = 0.30
 EXIT_ABSOLUTE_THRESHOLD = 40
 STARTING_CAPITAL = 10_000.0
+
+# Exit thresholds — price-based
+TRAILING_STOP_PCT = 0.03      # sell if price drops 3% from peak since entry
+HARD_STOP_PCT = 0.05          # sell if price drops 5% from entry price
+
+# Re-entry gate — prevent churn
+REENTRY_SCORE_BOOST = 15      # must score this many points above sell score to re-buy
+SELL_HISTORY_EXPIRY_HOURS = 24 # clear stale sell history after this long
 
 # Risk management — casino rules
 MAX_RISK_PER_TRADE = 0.02     # never risk more than 2% of portfolio per trade
@@ -53,13 +71,23 @@ MAX_KELLY_FRACTION = 0.5      # use half-Kelly (full Kelly is too aggressive)
 MAX_ACCEPTABLE_RUIN = 0.05    # 5% risk of ruin = reduce sizing
 VARIANCE_LOOKBACK = 50        # last N trades for rolling stats
 
-DEFAULT_UNIVERSE = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "JPM", "V",
-    "UNH", "XOM", "LLY", "MA", "HD", "PG", "COST", "JNJ", "MRK", "ABBV",
-    "CVX", "BAC", "WMT", "KO", "NFLX", "PEP", "DIS", "ADBE", "AMD", "INTC",
-    "CRM", "PYPL", "QCOM", "TXN", "CSCO", "NEE", "RTX", "CAT", "GS", "AMGN",
-    "T", "VZ", "PFE", "BMY", "MO", "SBUX", "DE", "MMM", "GE", "F",
+SCORE_CANDIDATES_LIMIT = 25   # score this many candidates per cycle (~1s each)
+MAX_UNIVERSE_SIZE = 250       # full candidate pool; sampled SCORE_CANDIDATES_LIMIT/cycle
+SENTIMENT_TILT_MAX = 10       # max points RSS sentiment adds/subtracts from a score
+EQUITY_CURVE_MAX = 1000       # cap stored equity-curve points
+
+# Seed tickers — only used as fallback if no dynamic sources return anything
+_SEED_UNIVERSE = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM",
+    "SPY", "QQQ",
 ]
+
+# Where the bot persists its ledger (portfolio id + trade log) across restarts.
+_STATE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "bot_state.json",
+)
+_loaded = False  # guard so load_state() only reads the file once per process
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +198,8 @@ def _compute_trade_stats(trade_log: list) -> TradeStats:
 # ---------------------------------------------------------------------------
 
 def _compute_position_size(score: float, high_vix: bool, stats: TradeStats,
-                           portfolio_value: float) -> float:
+                           portfolio_value: float,
+                           max_risk: float = MAX_RISK_PER_TRADE) -> float:
     """Calculate dollar amount to risk on this trade.
 
     Sizing hierarchy:
@@ -209,8 +238,8 @@ def _compute_position_size(score: float, high_vix: bool, stats: TradeStats,
     conviction = score / 100.0
     adjusted_risk = base_risk * conviction
 
-    # Hard cap at 2% per trade — never more, regardless of Kelly
-    capped_risk = min(adjusted_risk, MAX_RISK_PER_TRADE)
+    # Hard cap per trade — never more, regardless of Kelly
+    capped_risk = min(adjusted_risk, max_risk)
 
     return portfolio_value * capped_risk
 
@@ -233,6 +262,17 @@ class BotState:
     last_cycle_time: Optional[datetime] = None
     # Quant stats — updated every cycle
     stats: TradeStats = field(default_factory=TradeStats)
+    # Sell history — {ticker: {"score": float, "time": datetime}} for re-entry gate
+    sell_history: dict = field(default_factory=dict)
+    # Equity curve — [{"time": iso_str, "value": float}] appended each snapshot
+    equity_curve: list = field(default_factory=list)
+    # Runtime-adjustable parameters (editable from the UI while stopped)
+    max_positions: int = MAX_POSITIONS
+    min_score: float = MIN_SCORE
+    max_risk_per_trade: float = MAX_RISK_PER_TRADE
+    starting_capital: float = STARTING_CAPITAL
+    # Blend MarketPulse RSS sentiment into MCP scores (the two-tab bridge)
+    sentiment_bridge: bool = True
 
 
 _state = BotState()
@@ -242,6 +282,66 @@ _lock = threading.Lock()
 def get_state() -> BotState:
     """Return the global BotState singleton."""
     return _state
+
+
+# ---------------------------------------------------------------------------
+# Persistence — survive Streamlit restarts and warm-start the Edge panel
+# ---------------------------------------------------------------------------
+
+def _save_state() -> None:
+    """Persist the bot's ledger (portfolio id + realized trade log) to disk.
+
+    Best-effort: never raises into a trading cycle. No-ops until a portfolio
+    exists so unit tests that snapshot a bare state don't write a file.
+    """
+    if not _state.portfolio_id:
+        return
+    try:
+        os.makedirs(os.path.dirname(_STATE_PATH), exist_ok=True)
+        with _lock:
+            payload = {
+                "portfolio_id": _state.portfolio_id,
+                "total_pnl": _state.total_pnl,
+                "trade_log": _state.trade_log,
+                "equity_curve": _state.equity_curve,
+            }
+        with open(_STATE_PATH, "w") as f:
+            json.dump(payload, f)
+    except Exception as e:
+        logger.debug("Could not persist bot state: %s", e)
+
+
+def load_state() -> bool:
+    """Load a previously saved ledger so the bot resumes warm. Call once.
+
+    Restores portfolio_id and the closed-trade log, then recomputes stats so
+    the Edge Statistics panel is populated immediately. Returns True if a
+    state file was loaded. Guarded so repeated Streamlit reruns don't clobber
+    the live in-memory log.
+    """
+    global _loaded
+    if _loaded:
+        return False
+    _loaded = True
+    if not os.path.exists(_STATE_PATH):
+        return False
+    try:
+        with open(_STATE_PATH) as f:
+            payload = json.load(f)
+        with _lock:
+            _state.portfolio_id = payload.get("portfolio_id") or _state.portfolio_id
+            _state.trade_log = payload.get("trade_log", [])
+            # total_pnl is mark-to-market (value - capital), recomputed on the
+            # first snapshot; a fresh account correctly shows $0 until it trades.
+            _state.total_pnl = 0.0
+            _state.equity_curve = payload.get("equity_curve", [])
+            _state.stats = _compute_trade_stats(_state.trade_log)
+        logger.info("Loaded persisted bot state: %d trades, portfolio %s",
+                    len(_state.trade_log), _state.portfolio_id)
+        return True
+    except Exception as e:
+        logger.warning("Could not load bot state: %s", e)
+        return False
 
 
 def _get_composite_score(analysis: dict) -> float:
@@ -279,15 +379,20 @@ def _sell_position(portfolio_id: str, ticker: str, pos: dict, reason: str) -> bo
     pnl = round((current_price - pos["entry_price"]) * pos["shares"], 2)
 
     if "error" not in result:
+        sell_score = pos.get("current_score", 0)
         with _lock:
             _state.open_positions.pop(ticker, None)
+            _state.sell_history[ticker] = {
+                "score": sell_score,
+                "time": datetime.now(),
+            }
             _state.trade_log.insert(0, {
                 "time": datetime.now().strftime("%H:%M"),
                 "action": "SELL",
                 "ticker": ticker,
                 "price": current_price,
                 "shares": pos["shares"],
-                "score": pos.get("current_score", 0),
+                "score": sell_score,
                 "reason": reason,
                 "pnl": pnl,
             })
@@ -301,13 +406,14 @@ def _sell_position(portfolio_id: str, ticker: str, pos: dict, reason: str) -> bo
 
 
 def _check_exits(portfolio_id: str, stop_event: threading.Event) -> None:
-    """Smart exit engine — probability-aware selling.
+    """Exit engine — score + price triggers, whichever fires first.
 
-    Exit triggers:
-    1. SIGNAL REVERSAL: score dropped 30%+ or below absolute threshold
-    2. PROFIT TAKING: score fading 15%+ while position is green
-    3. MOMENTUM STALL: held 10+ cycles with no score improvement
-    4. OUTLIER LOSS: loss exceeds 2 standard deviations (cut the outlier)
+    Exit triggers (checked in order):
+    1. HARD STOP: price dropped 5% from entry — non-negotiable capital protection
+    2. TRAILING STOP: price dropped 3% from peak — lock gains after a run-up
+    3. SIGNAL REVERSAL: score dropped 30%+ or below absolute threshold
+    4. PROFIT TAKING: score fading 15%+ while position is green
+    5. OUTLIER LOSS: loss exceeds 2 standard deviations (cut the outlier)
     """
     with _lock:
         positions = dict(_state.open_positions)
@@ -324,21 +430,42 @@ def _check_exits(portfolio_id: str, stop_event: threading.Event) -> None:
             else pos["entry_price"]
         )
 
+        # Update position tracking
+        peak_price = max(pos.get("peak_price", pos["entry_price"]), current_price)
         with _lock:
             if ticker in _state.open_positions:
                 _state.open_positions[ticker]["current_price"] = current_price
                 _state.open_positions[ticker]["current_score"] = current_score
+                _state.open_positions[ticker]["peak_price"] = peak_price
+
+        entry_price = pos["entry_price"]
+        pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
+        pnl_dollar = (current_price - entry_price) * pos["shares"]
+
+        # Exit 1: Hard stop — price dropped 5% from entry
+        if pnl_pct <= -HARD_STOP_PCT:
+            reason = f"hard stop {pnl_pct*100:+.1f}% (limit {-HARD_STOP_PCT*100:.0f}%)"
+            _sell_position(portfolio_id, ticker, pos, reason)
+            continue
+
+        # Exit 2: Trailing stop — price dropped 3% from peak
+        if peak_price > entry_price:
+            drop_from_peak = (current_price - peak_price) / peak_price if peak_price > 0 else 0
+            if drop_from_peak <= -TRAILING_STOP_PCT:
+                reason = (
+                    f"trailing stop {drop_from_peak*100:+.1f}% from peak "
+                    f"${peak_price:.2f}→${current_price:.2f}"
+                )
+                _sell_position(portfolio_id, ticker, pos, reason)
+                continue
 
         if current_score == 0:
             continue
 
         entry_score = pos["entry_score"]
-        entry_price = pos["entry_price"]
-        pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
-        pnl_dollar = (current_price - entry_price) * pos["shares"]
         score_change_pct = (current_score - entry_score) / entry_score if entry_score > 0 else 0
 
-        # Exit 1: Signal reversal
+        # Exit 3: Signal reversal — score decayed significantly
         if (current_score < entry_score * (1 - EXIT_SCORE_DROP_THRESHOLD)
                 or current_score < EXIT_ABSOLUTE_THRESHOLD):
             reason = (
@@ -349,21 +476,13 @@ def _check_exits(portfolio_id: str, stop_event: threading.Event) -> None:
             _sell_position(portfolio_id, ticker, pos, reason)
             continue
 
-        # Exit 2: Profit taking — lock gains before they evaporate
+        # Exit 4: Profit taking — lock gains before they evaporate
         if pnl_pct > 0.005 and score_change_pct < -0.15:
             reason = f"take profit +{pnl_pct*100:.1f}% (score fading {entry_score:.0f}→{current_score:.0f})"
             _sell_position(portfolio_id, ticker, pos, reason)
             continue
 
-        # Exit 3: Momentum stall
-        cycles_held = _state.cycle_count - pos.get("entry_cycle", _state.cycle_count)
-        if cycles_held >= 10 and score_change_pct <= 0:
-            reason = f"stale {cycles_held} cycles (score {entry_score:.0f}→{current_score:.0f})"
-            _sell_position(portfolio_id, ticker, pos, reason)
-            continue
-
-        # Exit 4: Outlier loss — if unrealized loss > 2 std deviations, cut it
-        # This is variance management: don't let one bad trade destroy the account
+        # Exit 5: Outlier loss — if unrealized loss > 2 std deviations, cut it
         if current_stats.std_dev > 0 and current_stats.total_trades >= MIN_TRADES_FOR_STATS:
             mean_pnl = current_stats.expected_value
             if pnl_dollar < mean_pnl - 2 * current_stats.std_dev:
@@ -403,62 +522,153 @@ def _retry_pending_sells(portfolio_id: str, stop_event: threading.Event) -> None
                 })
 
 
+def _build_dynamic_universe() -> list[str]:
+    """Build a broad, ordered ticker pool from multiple sources.
+
+    Sources (in priority order — most actionable first):
+    1. MCP scanners — anomalies, volume leaders, gap movers (event-driven catalysts)
+    2. RSS ticker_cache — every ticker the news is talking about right now
+    3. Seed tickers — small fallback if everything else is empty
+
+    Returns up to MAX_UNIVERSE_SIZE symbols — the full pool. _scan_candidates
+    shuffles it and _score_candidates scores SCORE_CANDIDATES_LIMIT per cycle, so
+    over successive cycles the bot rotates across the entire pool (it can trade
+    any ticker the news surfaces) without blowing the per-cycle time budget.
+    """
+    ordered: list[str] = []
+    seen: set = set()
+
+    def _add(sym: str) -> None:
+        if sym and sym not in seen:
+            seen.add(sym)
+            ordered.append(sym)
+
+    # 1. MCP scanners (no symbols arg = server picks its own 50-ticker universe)
+    for scanner, key in [
+        (scan_anomalies, "anomalies"),
+        (scan_volume_leaders, "leaders"),
+        (scan_gap_movers, "movers"),
+    ]:
+        try:
+            result = scanner()
+            if "error" not in result:
+                for item in result.get(key, []):
+                    _add(item.get("symbol", ""))
+        except Exception as e:
+            logger.debug("Scanner %s failed: %s", scanner.__name__, e)
+
+    # 2. RSS news mentions — fill remaining slots with what the news is buzzing about
+    try:
+        cache = load_ticker_cache()
+        by_mentions = sorted(
+            cache.values(),
+            key=lambda x: x.get("mention_count", 0),
+            reverse=True,
+        )
+        for item in by_mentions:
+            _add(item.get("symbol", ""))
+    except Exception as e:
+        logger.debug("ticker_cache unavailable: %s", e)
+
+    # 3. Seed fallback
+    if not ordered:
+        ordered = list(_SEED_UNIVERSE)
+
+    return ordered[:MAX_UNIVERSE_SIZE]
+
+
 def _scan_candidates(stop_event: threading.Event) -> list:
-    """Scan universe + anomalies + volume leaders. Returns deduped candidate symbols."""
-    raw: list = []
+    """Build the dynamic universe and return shuffled, unheld candidates.
 
-    universe_result = scan_universe(DEFAULT_UNIVERSE)
-    if "error" not in universe_result:
-        for item in universe_result.get("scores", []):
-            sym = item.get("symbol", "")
-            if sym:
-                raw.append(sym)
-
+    The expensive part — actually scoring each ticker — happens in
+    _score_candidates via analyze_ticker (~1s/symbol). We deliberately skip a
+    scan_universe pre-rank: it re-scores the same tickers with a slower batch
+    call (~3s/symbol) that times out on any universe larger than ~10.
+    """
+    universe = _build_dynamic_universe()
     if stop_event.is_set():
         return []
-
-    anomaly_result = scan_anomalies(DEFAULT_UNIVERSE)
-    if "error" not in anomaly_result:
-        for item in anomaly_result.get("anomalies", []):
-            sym = item.get("symbol", "")
-            if sym:
-                raw.append(sym)
-
-    if stop_event.is_set():
-        return []
-
-    volume_result = scan_volume_leaders(DEFAULT_UNIVERSE)
-    if "error" not in volume_result:
-        for item in volume_result.get("leaders", []):
-            sym = item.get("symbol", "")
-            if sym:
-                raw.append(sym)
 
     with _lock:
         held = set(_state.open_positions.keys()) | _state.pending_sells
 
     seen: set = set()
     candidates = []
-    for sym in raw:
-        if sym not in held and sym not in seen:
-            seen.add(sym)
-            candidates.append(sym)
+    for sym in universe:
+        if sym in held or sym in seen:
+            continue
+        seen.add(sym)
+        candidates.append(sym)
+    # Shuffle so the bot doesn't always evaluate the same first N tickers
+    random.shuffle(candidates)
     return candidates
 
 
+def _rss_sentiment_map() -> dict:
+    """Map symbol -> sentiment tilt from MarketPulse RSS sentiment.
+
+    Tilt = (bullish_ratio - bearish_ratio) * SENTIMENT_TILT_MAX, so a strongly
+    bullish news ticker gets up to +10 points and a bearish one up to -10. This
+    is the bridge that lets the news-sentiment tab influence what the bot trades.
+    """
+    out = {}
+    try:
+        cache = load_ticker_cache()
+        for data in cache.values():
+            sym = data.get("symbol")
+            if not sym:
+                continue
+            tilt = (data.get("bullish_ratio", 0) - data.get("bearish_ratio", 0)) * SENTIMENT_TILT_MAX
+            out[sym.upper()] = round(tilt, 1)
+    except Exception as e:
+        logger.debug("RSS sentiment map unavailable: %s", e)
+    return out
+
+
 def _score_candidates(candidates: list, stop_event: threading.Event) -> list:
-    """Score top-10 candidates. Returns [{ticker, score, price}] sorted score desc."""
+    """Score candidates and return [{ticker, score, price, ...}] sorted by score.
+
+    The MCP composite score is blended with MarketPulse RSS sentiment (when the
+    bridge is enabled). Re-entry gate: a recently-sold ticker must score
+    REENTRY_SCORE_BOOST points above its sell score to re-enter.
+    """
+    with _lock:
+        sell_hist = dict(_state.sell_history)
+        min_score = _state.min_score
+        use_sentiment = _state.sentiment_bridge
+
+    tilt_map = _rss_sentiment_map() if use_sentiment else {}
+
     scored = []
-    for sym in candidates[:10]:
+    for sym in candidates[:SCORE_CANDIDATES_LIMIT]:
         if stop_event.is_set():
             return scored
         analysis = analyze_ticker(sym)
-        score = _get_composite_score(analysis)
-        if score < MIN_SCORE:
+        base = _get_composite_score(analysis)
+        if base <= 0:
             continue
+
+        tilt = tilt_map.get(sym.upper(), 0.0)
+        score = max(0.0, min(100.0, base + tilt))
+        if score < min_score:
+            continue
+
+        # Re-entry gate: need higher conviction to re-buy
+        if sym in sell_hist:
+            required = sell_hist[sym]["score"] + REENTRY_SCORE_BOOST
+            if score < required:
+                logger.debug(
+                    "Re-entry blocked for %s: score %.0f < required %.0f (sold at %.0f + %d)",
+                    sym, score, required, sell_hist[sym]["score"], REENTRY_SCORE_BOOST,
+                )
+                continue
+
         price = analysis.get("price") if "error" not in analysis else None
         if price and float(price) > 0:
-            scored.append({"ticker": sym, "score": score, "price": float(price)})
+            scored.append({
+                "ticker": sym, "score": score, "price": float(price),
+                "base_score": base, "sentiment_tilt": tilt,
+            })
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored
 
@@ -479,13 +689,15 @@ def _enter_positions(
         remaining_cash = _state.portfolio_cash
         portfolio_value = _state.portfolio_value
         current_stats = _state.stats
+        max_positions = _state.max_positions
+        max_risk = _state.max_risk_per_trade
 
     for candidate in scored:
         if stop_event.is_set():
             return
 
         with _lock:
-            at_max = len(_state.open_positions) >= MAX_POSITIONS
+            at_max = len(_state.open_positions) >= max_positions
             weakest_ticker = None
             weakest_score = float("inf")
             if at_max and _state.open_positions:
@@ -513,7 +725,7 @@ def _enter_positions(
 
         # Kelly-based position sizing
         dollar_amount = _compute_position_size(
-            candidate["score"], high_vix, current_stats, portfolio_value
+            candidate["score"], high_vix, current_stats, portfolio_value, max_risk
         )
         if dollar_amount <= 0:
             continue
@@ -532,6 +744,10 @@ def _enter_positions(
         if "error" not in result:
             actual_cost = shares * candidate["price"]
             risk_pct = actual_cost / portfolio_value * 100 if portfolio_value > 0 else 0
+            tilt = candidate.get("sentiment_tilt", 0.0)
+            sentiment_note = (
+                f" · news {tilt:+.0f}" if abs(tilt) >= 1 else ""
+            )
             with _lock:
                 _state.open_positions[candidate["ticker"]] = {
                     "entry_price": candidate["price"],
@@ -541,6 +757,7 @@ def _enter_positions(
                     "entry_cycle": _state.cycle_count,
                     "current_price": candidate["price"],
                     "current_score": candidate["score"],
+                    "peak_price": candidate["price"],
                 }
                 _state.trade_log.insert(0, {
                     "time": datetime.now().strftime("%H:%M"),
@@ -549,7 +766,7 @@ def _enter_positions(
                     "price": candidate["price"],
                     "shares": shares,
                     "score": candidate["score"],
-                    "reason": f"score {candidate['score']:.0f} · {risk_pct:.1f}% risk",
+                    "reason": f"score {candidate['score']:.0f}{sentiment_note} · {risk_pct:.1f}% risk",
                     "pnl": 0.0,
                 })
             remaining_cash -= actual_cost
@@ -570,14 +787,38 @@ def _snapshot_portfolio(portfolio_id: str) -> None:
         with _lock:
             _state.portfolio_cash = portfolio_info.get("current_cash", _state.portfolio_cash)
             _state.portfolio_value = result.get("total_value", _state.portfolio_value)
-            _state.total_pnl = _state.portfolio_value - STARTING_CAPITAL
+            # Mark-to-market P&L so it always reconciles with Portfolio Value
+            # (the seeded illustrative trades drive the Edge panel, not this).
+            _state.total_pnl = _state.portfolio_value - _state.starting_capital
     else:
         logger.warning("Portfolio snapshot failed: %s", result["error"])
+
+    # Append to the equity curve (used for the dashboard chart)
+    now = datetime.now()
+    with _lock:
+        _state.equity_curve.append({
+            "time": now.isoformat(timespec="seconds"),
+            "value": round(_state.portfolio_value, 2),
+        })
+        if len(_state.equity_curve) > EQUITY_CURVE_MAX:
+            _state.equity_curve = _state.equity_curve[-EQUITY_CURVE_MAX:]
+
+    # Expire stale sell history entries (>24h old)
+    with _lock:
+        expired = [
+            t for t, info in _state.sell_history.items()
+            if (now - info["time"]).total_seconds() > SELL_HISTORY_EXPIRY_HOURS * 3600
+        ]
+        for t in expired:
+            del _state.sell_history[t]
 
     # Recompute trade statistics every cycle
     with _lock:
         _state.stats = _compute_trade_stats(_state.trade_log)
         s = _state.stats
+
+    # Persist the ledger so the bot resumes warm after a restart
+    _save_state()
     if s.total_trades > 0:
         logger.info(
             "Stats: %d trades, %.0f%% win rate, EV=$%.2f, Kelly=%.2f%%, RoR=%.4f%%, R:R=%.2f",
@@ -586,21 +827,22 @@ def _snapshot_portfolio(portfolio_id: str) -> None:
         )
 
 
-def _run_cycle(portfolio_id: str, stop_event: threading.Event) -> None:
-    """Execute one full trading cycle."""
+def _run_cycle(portfolio_id: str, stop_event: threading.Event) -> bool:
+    """Execute one full trading cycle. Returns True if MCP server responded."""
     logger.info("=== Cycle %d start ===", _state.cycle_count)
 
     regime = detect_market_regime()
-    if "error" not in regime:
+    mcp_alive = "error" not in regime
+    if mcp_alive:
         logger.info("Market regime: %s (score %s)", regime.get("regime"), regime.get("score"))
 
     high_vix = _check_vix()
     _retry_pending_sells(portfolio_id, stop_event)
     if stop_event.is_set():
-        return
+        return mcp_alive
     _check_exits(portfolio_id, stop_event)
     if stop_event.is_set():
-        return
+        return mcp_alive
     candidates = _scan_candidates(stop_event)
     if candidates:
         scored = _score_candidates(candidates, stop_event)
@@ -609,6 +851,7 @@ def _run_cycle(portfolio_id: str, stop_event: threading.Event) -> None:
     else:
         logger.warning("No candidates — skipping entry phase")
     _snapshot_portfolio(portfolio_id)
+    return mcp_alive
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +872,7 @@ class BotEngine:
 
         if _state.portfolio_id is None:
             result = create_portfolio(
-                starting_capital=STARTING_CAPITAL,
+                starting_capital=_state.starting_capital,
                 risk_profile="aggressive",
                 investment_horizon="short",
                 name="ScalpBot",
@@ -666,15 +909,39 @@ class BotEngine:
         with _lock:
             portfolio_id = _state.portfolio_id
 
+        consecutive_failures = 0
+
         while not self._stop_event.is_set():
             with _lock:
                 _state.cycle_count += 1
                 _state.last_cycle_time = datetime.now()
             try:
-                _run_cycle(portfolio_id, self._stop_event)
+                healthy = _run_cycle(portfolio_id, self._stop_event)
             except Exception as e:
                 logger.error("Cycle error: %s", e, exc_info=True)
-            for _ in range(CYCLE_INTERVAL):
+                healthy = False
+
+            if healthy:
+                consecutive_failures = 0
+                wait = CYCLE_INTERVAL
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    logger.error(
+                        "MCP server unreachable for %d consecutive cycles — auto-stopping bot",
+                        consecutive_failures,
+                    )
+                    break
+                wait = min(
+                    INITIAL_BACKOFF * (2 ** (consecutive_failures - 1)),
+                    MAX_BACKOFF,
+                )
+                logger.warning(
+                    "MCP failure %d/%d — backing off %ds before retry",
+                    consecutive_failures, MAX_CONSECUTIVE_FAILURES, wait,
+                )
+
+            for _ in range(wait):
                 if self._stop_event.is_set():
                     break
                 time.sleep(1)

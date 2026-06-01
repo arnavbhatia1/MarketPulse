@@ -128,6 +128,15 @@ def _reset_state():
     bot_engine._state.open_positions = {}
     bot_engine._state.pending_sells = set()
     bot_engine._state.trade_log = []
+    bot_engine._state.sell_history = {}
+    bot_engine._state.equity_curve = []
+    # Reset runtime params to defaults; disable the sentiment bridge so scoring
+    # tests are deterministic (no RSS-cache tilt).
+    bot_engine._state.max_positions = bot_engine.MAX_POSITIONS
+    bot_engine._state.min_score = bot_engine.MIN_SCORE
+    bot_engine._state.max_risk_per_trade = bot_engine.MAX_RISK_PER_TRADE
+    bot_engine._state.starting_capital = bot_engine.STARTING_CAPITAL
+    bot_engine._state.sentiment_bridge = False
     bot_engine._engine._stop_event.set()
     bot_engine._engine._thread = None
 
@@ -240,6 +249,7 @@ class TestCheckExits:
         bot_engine._state.open_positions["AAPL"] = {
             "entry_price": 150.0, "shares": 10, "entry_score": 80.0,
             "entry_time": datetime.now(), "current_price": 150.0, "current_score": 80.0,
+            "peak_price": 150.0,
         }
         from src.investor.bot_engine import _check_exits
         _check_exits("pid", threading.Event())
@@ -257,6 +267,7 @@ class TestCheckExits:
         bot_engine._state.open_positions["MSFT"] = {
             "entry_price": 300.0, "shares": 5, "entry_score": 50.0,
             "entry_time": datetime.now(), "current_price": 300.0, "current_score": 50.0,
+            "peak_price": 300.0,
         }
         from src.investor.bot_engine import _check_exits
         _check_exits("pid", threading.Event())
@@ -265,13 +276,14 @@ class TestCheckExits:
     @patch("src.investor.bot_engine.execute_sell",
            return_value={"status": "executed"})
     @patch("src.investor.bot_engine.analyze_ticker",
-           return_value={"price": 155.0, "score": {"score": 75.0}})
+           return_value={"price": 795.0, "score": {"score": 75.0}})
     def test_no_exit_when_score_holds(self, mock_analyze, mock_sell):
         from src.investor import bot_engine
         from datetime import datetime
         bot_engine._state.open_positions["NVDA"] = {
             "entry_price": 800.0, "shares": 2, "entry_score": 80.0,
             "entry_time": datetime.now(), "current_price": 800.0, "current_score": 80.0,
+            "peak_price": 800.0,
         }
         from src.investor.bot_engine import _check_exits
         _check_exits("pid", threading.Event())
@@ -288,6 +300,7 @@ class TestCheckExits:
         bot_engine._state.open_positions["TSLA"] = {
             "entry_price": 200.0, "shares": 3, "entry_score": 80.0,
             "entry_time": datetime.now(), "current_price": 200.0, "current_score": 80.0,
+            "peak_price": 200.0,
         }
         from src.investor.bot_engine import _check_exits
         _check_exits("pid", threading.Event())
@@ -297,49 +310,159 @@ class TestCheckExits:
     @patch("src.investor.bot_engine.execute_sell")
     @patch("src.investor.bot_engine.analyze_ticker",
            return_value={"error": "timeout"})
-    def test_skips_exit_when_score_is_zero(self, mock_analyze, mock_sell):
+    def test_skips_score_exits_when_score_is_zero(self, mock_analyze, mock_sell):
         from src.investor import bot_engine
         from datetime import datetime
         bot_engine._state.open_positions["AMD"] = {
             "entry_price": 120.0, "shares": 5, "entry_score": 75.0,
             "entry_time": datetime.now(), "current_price": 120.0, "current_score": 75.0,
+            "peak_price": 120.0,
         }
         from src.investor.bot_engine import _check_exits
         _check_exits("pid", threading.Event())
         assert "AMD" in bot_engine._state.open_positions  # position kept
         mock_sell.assert_not_called()  # no sell attempted
 
+    @patch("src.investor.bot_engine.execute_sell",
+           return_value={"status": "executed"})
+    @patch("src.investor.bot_engine.analyze_ticker",
+           return_value={"price": 94.0, "score": {"score": 75.0}})
+    def test_hard_stop_exits_at_5_percent_loss(self, mock_analyze, mock_sell):
+        from src.investor import bot_engine
+        from datetime import datetime
+        bot_engine._state.open_positions["META"] = {
+            "entry_price": 100.0, "shares": 5, "entry_score": 75.0,
+            "entry_time": datetime.now(), "current_price": 100.0, "current_score": 75.0,
+            "peak_price": 100.0,
+        }
+        from src.investor.bot_engine import _check_exits
+        _check_exits("pid", threading.Event())
+        assert "META" not in bot_engine._state.open_positions
+        assert "hard stop" in bot_engine._state.trade_log[0]["reason"]
+
+    @patch("src.investor.bot_engine.execute_sell",
+           return_value={"status": "executed"})
+    @patch("src.investor.bot_engine.analyze_ticker",
+           return_value={"price": 107.0, "score": {"score": 80.0}})
+    def test_trailing_stop_exits_on_drop_from_peak(self, mock_analyze, mock_sell):
+        from src.investor import bot_engine
+        from datetime import datetime
+        # Entered at 100, peaked at 112, now dropped to 107 (4.5% from peak > 3%)
+        bot_engine._state.open_positions["GOOG"] = {
+            "entry_price": 100.0, "shares": 5, "entry_score": 80.0,
+            "entry_time": datetime.now(), "current_price": 112.0, "current_score": 80.0,
+            "peak_price": 112.0,
+        }
+        from src.investor.bot_engine import _check_exits
+        _check_exits("pid", threading.Event())
+        assert "GOOG" not in bot_engine._state.open_positions
+        assert "trailing stop" in bot_engine._state.trade_log[0]["reason"]
+
+    @patch("src.investor.bot_engine.execute_sell",
+           return_value={"status": "executed"})
+    @patch("src.investor.bot_engine.analyze_ticker",
+           return_value={"price": 109.0, "score": {"score": 80.0}})
+    def test_trailing_stop_does_not_fire_within_threshold(self, mock_analyze, mock_sell):
+        from src.investor import bot_engine
+        from datetime import datetime
+        # Entered at 100, peaked at 112, now at 109 (2.7% from peak < 3%)
+        bot_engine._state.open_positions["GOOG"] = {
+            "entry_price": 100.0, "shares": 5, "entry_score": 80.0,
+            "entry_time": datetime.now(), "current_price": 112.0, "current_score": 80.0,
+            "peak_price": 112.0,
+        }
+        from src.investor.bot_engine import _check_exits
+        _check_exits("pid", threading.Event())
+        assert "GOOG" in bot_engine._state.open_positions
+        mock_sell.assert_not_called()
+
+    @patch("src.investor.bot_engine.execute_sell",
+           return_value={"status": "executed"})
+    @patch("src.investor.bot_engine.analyze_ticker",
+           return_value={"price": 100.0, "score": {"score": 70.0}})
+    def test_sell_records_sell_history(self, mock_analyze, mock_sell):
+        from src.investor import bot_engine
+        from datetime import datetime
+        bot_engine._state.open_positions["XOM"] = {
+            "entry_price": 100.0, "shares": 5, "entry_score": 70.0,
+            "entry_time": datetime.now(), "current_price": 100.0, "current_score": 70.0,
+            "peak_price": 100.0,
+        }
+        # Score 70 < 40 threshold triggers exit
+        mock_analyze.return_value = {"price": 100.0, "score": {"score": 35.0}}
+        from src.investor.bot_engine import _check_exits
+        _check_exits("pid", threading.Event())
+        assert "XOM" in bot_engine._state.sell_history
+        assert bot_engine._state.sell_history["XOM"]["score"] == 35.0
+
+
+class TestBuildDynamicUniverse:
+    def setup_method(self):
+        _reset_state()
+
+    @patch("src.investor.bot_engine.scan_gap_movers", return_value={"movers": []})
+    @patch("src.investor.bot_engine.scan_volume_leaders", return_value={"leaders": []})
+    @patch("src.investor.bot_engine.scan_anomalies", return_value={"anomalies": []})
+    @patch("src.investor.bot_engine.load_ticker_cache", return_value={
+        "AAPL": {"symbol": "AAPL", "mention_count": 50},
+        "TSLA": {"symbol": "TSLA", "mention_count": 30},
+    })
+    def test_pulls_from_ticker_cache(self, mock_cache, mock_a, mock_v, mock_g):
+        from src.investor.bot_engine import _build_dynamic_universe
+        result = _build_dynamic_universe()
+        assert "AAPL" in result
+        assert "TSLA" in result
+
+    @patch("src.investor.bot_engine.scan_gap_movers",
+           return_value={"movers": [{"symbol": "GME"}]})
+    @patch("src.investor.bot_engine.scan_volume_leaders",
+           return_value={"leaders": [{"symbol": "NVDA"}]})
+    @patch("src.investor.bot_engine.scan_anomalies",
+           return_value={"anomalies": [{"symbol": "AMC"}]})
+    @patch("src.investor.bot_engine.load_ticker_cache", return_value={})
+    def test_includes_mcp_scanner_results(self, mock_cache, mock_a, mock_v, mock_g):
+        from src.investor.bot_engine import _build_dynamic_universe
+        result = _build_dynamic_universe()
+        assert "AMC" in result
+        assert "NVDA" in result
+        assert "GME" in result
+
+    @patch("src.investor.bot_engine.scan_gap_movers",
+           return_value={"error": "timeout"})
+    @patch("src.investor.bot_engine.scan_volume_leaders",
+           return_value={"error": "timeout"})
+    @patch("src.investor.bot_engine.scan_anomalies",
+           return_value={"error": "timeout"})
+    @patch("src.investor.bot_engine.load_ticker_cache", return_value={})
+    def test_falls_back_to_seed_when_all_fail(self, mock_cache, mock_a, mock_v, mock_g):
+        from src.investor.bot_engine import _build_dynamic_universe, _SEED_UNIVERSE
+        result = _build_dynamic_universe()
+        for sym in _SEED_UNIVERSE:
+            assert sym in result
+
 
 class TestScanCandidates:
     def setup_method(self):
         _reset_state()
 
-    @patch("src.investor.bot_engine.scan_volume_leaders", return_value={"leaders": []})
-    @patch("src.investor.bot_engine.scan_anomalies", return_value={"anomalies": []})
-    @patch("src.investor.bot_engine.scan_universe",
-           return_value={"scores": [{"symbol": "AAPL"}, {"symbol": "MSFT"}]})
-    def test_returns_symbols_from_universe(self, mock_u, mock_a, mock_v):
+    @patch("src.investor.bot_engine._build_dynamic_universe",
+           return_value=["AAPL", "MSFT", "NVDA"])
+    def test_returns_symbols_from_universe(self, mock_build):
         from src.investor.bot_engine import _scan_candidates
         result = _scan_candidates(threading.Event())
         assert "AAPL" in result
         assert "MSFT" in result
 
-    @patch("src.investor.bot_engine.scan_volume_leaders",
-           return_value={"leaders": [{"symbol": "AAPL"}]})
-    @patch("src.investor.bot_engine.scan_anomalies",
-           return_value={"anomalies": [{"symbol": "AAPL"}]})
-    @patch("src.investor.bot_engine.scan_universe",
-           return_value={"scores": [{"symbol": "AAPL"}, {"symbol": "MSFT"}]})
-    def test_deduplicates_across_sources(self, mock_u, mock_a, mock_v):
+    @patch("src.investor.bot_engine._build_dynamic_universe",
+           return_value=["AAPL", "AAPL", "MSFT"])
+    def test_deduplicates(self, mock_build):
         from src.investor.bot_engine import _scan_candidates
         result = _scan_candidates(threading.Event())
         assert result.count("AAPL") == 1
 
-    @patch("src.investor.bot_engine.scan_volume_leaders", return_value={"leaders": []})
-    @patch("src.investor.bot_engine.scan_anomalies", return_value={"anomalies": []})
-    @patch("src.investor.bot_engine.scan_universe",
-           return_value={"scores": [{"symbol": "AAPL"}, {"symbol": "HELD"}]})
-    def test_filters_out_held_positions(self, mock_u, mock_a, mock_v):
+    @patch("src.investor.bot_engine._build_dynamic_universe",
+           return_value=["AAPL", "HELD"])
+    def test_filters_out_held_positions(self, mock_build):
         from src.investor import bot_engine
         bot_engine._state.open_positions["HELD"] = {}
         from src.investor.bot_engine import _scan_candidates
@@ -347,13 +470,8 @@ class TestScanCandidates:
         assert "HELD" not in result
         assert "AAPL" in result
 
-    @patch("src.investor.bot_engine.scan_volume_leaders",
-           return_value={"error": "timeout"})
-    @patch("src.investor.bot_engine.scan_anomalies",
-           return_value={"error": "timeout"})
-    @patch("src.investor.bot_engine.scan_universe",
-           return_value={"error": "timeout"})
-    def test_returns_empty_when_all_scans_fail(self, mock_u, mock_a, mock_v):
+    @patch("src.investor.bot_engine._build_dynamic_universe", return_value=[])
+    def test_returns_empty_when_no_universe(self, mock_build):
         from src.investor.bot_engine import _scan_candidates
         assert _scan_candidates(threading.Event()) == []
 
@@ -394,6 +512,29 @@ class TestScoreCandidates:
         from src.investor.bot_engine import _score_candidates
         result = _score_candidates(["LOW", "HIGH"], threading.Event())
         assert result[0]["score"] > result[1]["score"]
+
+    @patch("src.investor.bot_engine.analyze_ticker",
+           return_value={"price": 100.0, "score": {"score": 72.0}})
+    def test_reentry_blocked_when_score_below_sell_plus_boost(self, mock_analyze):
+        from src.investor import bot_engine
+        from datetime import datetime
+        # Sold BMY at score 70 — needs 70+15=85 to re-enter
+        bot_engine._state.sell_history["BMY"] = {"score": 70.0, "time": datetime.now()}
+        from src.investor.bot_engine import _score_candidates
+        result = _score_candidates(["BMY"], threading.Event())
+        assert result == []
+
+    @patch("src.investor.bot_engine.analyze_ticker",
+           return_value={"price": 100.0, "score": {"score": 88.0}})
+    def test_reentry_allowed_when_score_above_sell_plus_boost(self, mock_analyze):
+        from src.investor import bot_engine
+        from datetime import datetime
+        # Sold BMY at score 70 — needs 85, scoring 88 → allowed
+        bot_engine._state.sell_history["BMY"] = {"score": 70.0, "time": datetime.now()}
+        from src.investor.bot_engine import _score_candidates
+        result = _score_candidates(["BMY"], threading.Event())
+        assert len(result) == 1
+        assert result[0]["ticker"] == "BMY"
 
 
 class TestEnterPositions:
@@ -472,6 +613,7 @@ class TestSnapshotPortfolio:
         _snapshot_portfolio("pid")
         assert bot_engine._state.portfolio_cash == pytest.approx(8_000.0)
         assert bot_engine._state.portfolio_value == pytest.approx(10_500.0)
+        # Mark-to-market: value (10_500) - starting_capital (10_000) = 500
         assert bot_engine._state.total_pnl == pytest.approx(500.0)
 
     @patch("src.investor.bot_engine.analyze_portfolio",
@@ -484,3 +626,51 @@ class TestSnapshotPortfolio:
         _snapshot_portfolio("pid")
         assert bot_engine._state.portfolio_cash == pytest.approx(5_000.0)
         assert bot_engine._state.portfolio_value == pytest.approx(11_000.0)
+
+    @patch("src.investor.bot_engine.analyze_portfolio", return_value={
+        "total_value": 10_250.0, "portfolio": {"current_cash": 9_000.0},
+    })
+    def test_snapshot_appends_equity_point(self, mock_analyze):
+        from src.investor import bot_engine
+        from src.investor.bot_engine import _snapshot_portfolio
+        # portfolio_id stays None so _save_state no-ops (no file written in tests)
+        _snapshot_portfolio("pid")
+        assert len(bot_engine._state.equity_curve) == 1
+        assert bot_engine._state.equity_curve[0]["value"] == pytest.approx(10_250.0)
+
+
+class TestSentimentBridge:
+    def setup_method(self):
+        _reset_state()
+
+    @patch("src.investor.bot_engine.analyze_ticker",
+           return_value={"price": 100.0, "score": {"score": 58.0}})
+    @patch("src.investor.bot_engine._rss_sentiment_map", return_value={"AAA": 5.0})
+    def test_bullish_sentiment_lifts_into_buy_range(self, mock_map, mock_analyze):
+        from src.investor import bot_engine
+        bot_engine._state.sentiment_bridge = True
+        from src.investor.bot_engine import _score_candidates
+        # base 58 (< 60) + 5 tilt = 63 → now qualifies
+        result = _score_candidates(["AAA"], threading.Event())
+        assert len(result) == 1
+        assert result[0]["sentiment_tilt"] == 5.0
+        assert result[0]["score"] == pytest.approx(63.0)
+
+    @patch("src.investor.bot_engine.analyze_ticker",
+           return_value={"price": 100.0, "score": {"score": 62.0}})
+    @patch("src.investor.bot_engine._rss_sentiment_map", return_value={"BBB": -8.0})
+    def test_bearish_sentiment_drops_out(self, mock_map, mock_analyze):
+        from src.investor import bot_engine
+        bot_engine._state.sentiment_bridge = True
+        from src.investor.bot_engine import _score_candidates
+        # base 62 - 8 = 54 (< 60) → excluded
+        assert _score_candidates(["BBB"], threading.Event()) == []
+
+    @patch("src.investor.bot_engine.analyze_ticker",
+           return_value={"price": 100.0, "score": {"score": 55.0}})
+    def test_min_score_param_respected(self, mock_analyze):
+        from src.investor import bot_engine
+        bot_engine._state.min_score = 50  # lowered from default 60
+        from src.investor.bot_engine import _score_candidates
+        result = _score_candidates(["ZZZ"], threading.Event())
+        assert len(result) == 1  # 55 >= 50

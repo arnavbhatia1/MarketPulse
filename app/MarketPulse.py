@@ -8,7 +8,7 @@ import html as html_mod
 import re
 import streamlit as st
 import sys, os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -18,13 +18,150 @@ if _root not in sys.path:
 load_dotenv(os.path.join(_root, '.env'))
 
 from app.components.styles import apply_theme, COLORS, SENTIMENT_COLORS
-from app.components.charts import ticker_mentions_bar, sentiment_trend
+from app.components.charts import ticker_mentions_bar, sentiment_trend, price_line
+
+_SENTIMENT_SCORE = {'bullish': 3, 'neutral': 2, 'meme': 1, 'bearish': 0}
+
+
+def _daily_scores(data: dict):
+    """Return [(day, numeric_score, label)] sorted by day from sentiment_by_day."""
+    by_day = data.get('sentiment_by_day', {}) or {}
+    out = []
+    for day in sorted(by_day.keys()):
+        label = by_day[day]
+        out.append((day, _SENTIMENT_SCORE.get(label, 2), label))
+    return out
+
+
+def _sentiment_momentum(data: dict):
+    """Compare the two most recent days. Returns (arrow, color, tooltip)."""
+    scores = _daily_scores(data)
+    if len(scores) < 2:
+        return '', COLORS['secondary'], 'new'
+    prev, latest = scores[-2][1], scores[-1][1]
+    if latest > prev:
+        return '▲', COLORS['bullish'], f"improving ({scores[-2][2]}→{scores[-1][2]})"
+    if latest < prev:
+        return '▼', COLORS['bearish'], f"cooling ({scores[-2][2]}→{scores[-1][2]})"
+    return '▬', COLORS['secondary'], 'steady'
+
+
+def _sparkline_html(data: dict) -> str:
+    """Tiny CSS bar sparkline of the last 7 days' dominant sentiment."""
+    scores = _daily_scores(data)[-7:]
+    if not scores:
+        return ''
+    bars = ''
+    for _, score, label in scores:
+        h = 4 + score * 4  # 4–16px tall
+        color = SENTIMENT_COLORS.get(label, COLORS['secondary'])
+        bars += (f'<span style="display:inline-block;width:5px;height:{h}px;'
+                 f'background:{color};margin-right:2px;border-radius:1px;'
+                 f'vertical-align:bottom"></span>')
+    return f'<div style="line-height:0;margin-top:6px">{bars}</div>'
 
 _TAG_RE = re.compile(r'<[^>]+>')
 
 def _strip_html(text: str) -> str:
     """Strip HTML tags and decode entities from post text."""
     return html_mod.unescape(_TAG_RE.sub('', text))
+
+
+def _sentiment_bar_html(data: dict) -> str:
+    """Stacked bar + legend showing the bullish/neutral/meme/bearish split."""
+    from app.components.styles import SENTIMENT_COLORS
+    counts = data.get('sentiment', {}) or {}
+    total = sum(counts.values()) or 1
+    order = [('bullish', 'Bullish'), ('neutral', 'Neutral'),
+             ('meme', 'Meme'), ('bearish', 'Bearish')]
+    bar, legend = '', ''
+    for key, label in order:
+        c = counts.get(key, 0)
+        if c <= 0:
+            continue
+        color = SENTIMENT_COLORS.get(key, '#78909C')
+        bar += f'<span style="width:{c / total * 100:.1f}%;background:{color}"></span>'
+        legend += f'<span><b style="color:{color}">{c}</b> {label}</span>'
+    if not bar:
+        return ''
+    return f'<div class="tk-bar">{bar}</div><div class="tk-bar-legend">{legend}</div>'
+
+
+def _render_ticker_body(company: str, symbol: str, data: dict) -> None:
+    """Shared ticker detail body: header, sentiment split, AI verdict, trend,
+    clickable headlines. Used by both the inline search card and the dialog."""
+    from src.agent.briefing import generate_briefing
+
+    dominant = data.get('dominant_sentiment', 'neutral')
+    color = SENTIMENT_COLORS.get(dominant, COLORS['secondary'])
+    mention_count = data.get('mention_count', 0)
+    last_updated = data.get('last_updated', 'unknown')
+    updated = str(last_updated)[:16] if last_updated and last_updated != 'unknown' else 'unknown'
+
+    safe_symbol = html_mod.escape(str(symbol))
+    safe_company = html_mod.escape(str(company))
+    safe_dom = html_mod.escape(str(dominant))
+
+    # Header with sentiment-colored top accent
+    st.markdown(f'''
+    <div class="tk-header" style="border-top:3px solid {color}">
+        <div>
+            <div class="tk-symbol">{safe_symbol}</div>
+            <div class="tk-company">{safe_company}</div>
+            <div class="tk-meta">{mention_count} mentions &middot; updated {html_mod.escape(updated)}</div>
+        </div>
+        <span class="tk-badge sentiment-badge-{safe_dom}">{safe_dom.upper()}</span>
+    </div>
+    ''', unsafe_allow_html=True)
+
+    bar = _sentiment_bar_html(data)
+    if bar:
+        st.markdown(bar, unsafe_allow_html=True)
+
+    # Price line — the "sentiment vs price" story
+    if symbol:
+        pfig = price_line(str(symbol), period="1mo")
+        if pfig is not None:
+            st.plotly_chart(pfig, width="stretch")
+
+    # AI Verdict
+    st.markdown("#### AI Verdict")
+    with st.spinner("Generating verdict..."):
+        verdict = generate_briefing(company, symbol, data)
+    st.markdown(
+        f'<div class="briefing-verdict">"{html_mod.escape(str(verdict))}"'
+        f'<br><small style="color:#8B949E;">&mdash; MarketPulse AI</small></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Sentiment trend
+    by_day = data.get('sentiment_by_day', {})
+    if by_day:
+        st.markdown("#### Sentiment Trend (7 days)")
+        st.plotly_chart(sentiment_trend(by_day), width="stretch")
+
+    # Clickable headlines
+    news_posts = (data.get('top_posts', {}) or {}).get('news', [])
+    st.markdown("#### Latest Headlines")
+    if not news_posts:
+        st.caption("No recent headlines for this ticker.")
+        return
+    for post in news_posts[:6]:
+        title = _strip_html(str(post.get('text', ''))).strip()
+        if len(title) > 130:
+            title = title[:130].rsplit(' ', 1)[0] + '…'
+        url = html_mod.escape(str(post.get('url') or '#'))
+        sent = str(post.get('sentiment', 'neutral'))
+        dot = SENTIMENT_COLORS.get(sent, COLORS['secondary'])
+        date = html_mod.escape(str(post.get('date') or ''))
+        st.markdown(f'''
+        <a class="tk-headline" href="{url}" target="_blank" style="border-left-color:{dot}">
+            <div class="tk-headline-title">{html_mod.escape(title)}</div>
+            <div class="tk-headline-meta">
+                <span class="tk-dot" style="background:{dot}"></span>{html_mod.escape(sent).upper()} &middot; {date}
+            </div>
+        </a>
+        ''', unsafe_allow_html=True)
 
 st.set_page_config(
     page_title="MarketPulse",
@@ -58,6 +195,10 @@ st.session_state["start_date"] = start_date.isoformat()
 st.session_state["end_date"] = end_date.isoformat()
 
 from app.pipeline_runner import refresh_pipeline, load_model, get_ticker_cache
+from app.auto_refresh import start_auto_refresh, get_status
+
+# Keep data fresh in the background — no manual click required.
+start_auto_refresh()
 
 if st.sidebar.button("Refresh Data", width="stretch"):
     with st.status("Refreshing market data...", expanded=True) as status:
@@ -71,6 +212,37 @@ if st.sidebar.button("Refresh Data", width="stretch"):
         status.update(label=f"Done -- {posts} posts from {', '.join(sources)}", state="complete")
         st.cache_data.clear()
     st.rerun()
+
+# ── Live status + coverage (auto-refresh) ────────────────────────────────────
+_refresh = get_status()
+if _refresh["running"]:
+    st.sidebar.markdown(
+        '<span style="color:#FFD600;font-weight:600">● Refreshing…</span>',
+        unsafe_allow_html=True,
+    )
+elif _refresh["last_run"]:
+    _ago = int((datetime.now() - _refresh["last_run"]).total_seconds())
+    _ago_str = f"{_ago}s ago" if _ago < 60 else f"{_ago // 60}m ago"
+    st.sidebar.markdown(
+        f'<span style="color:#00C853;font-weight:600">● Live</span>'
+        f'<span style="color:#8B949E"> · updated {_ago_str}</span>',
+        unsafe_allow_html=True,
+    )
+else:
+    st.sidebar.markdown(
+        '<span style="color:#8B949E">● Starting auto-refresh…</span>',
+        unsafe_allow_html=True,
+    )
+
+if _refresh["last_error"]:
+    st.sidebar.caption(f"⚠ last refresh error: {_refresh['last_error'][:60]}")
+
+if _refresh["total_posts"]:
+    _cov = _refresh["label_coverage"] * 100
+    st.sidebar.caption(
+        f"{_refresh['ticker_count']} tickers · {_refresh['labeled_posts']}/"
+        f"{_refresh['total_posts']} posts classified ({_cov:.0f}%)"
+    )
 
 # Model status
 model = load_model()
@@ -125,60 +297,7 @@ if search_clicked and query.strip():
         st.warning(f"No data for **{query.strip()}**. Try a ticker symbol like TSLA, NVDA, or AAPL -- then hit **Refresh Data** if needed.")
     else:
         symbol = ticker_data.get('symbol', resolved.upper())
-        dominant = ticker_data.get('dominant_sentiment', 'neutral')
-        mention_count = ticker_data.get('mention_count', 0)
-        last_updated = ticker_data.get('last_updated', 'unknown')
-
-        # Briefing card with badge pill
-        safe_symbol = html_mod.escape(str(symbol))
-        safe_resolved = html_mod.escape(str(resolved))
-        safe_dominant = html_mod.escape(str(dominant))
-        safe_updated = html_mod.escape(str(last_updated[:16] if last_updated != 'unknown' else 'unknown'))
-        st.markdown(f"""
-        <div class="briefing-card" style="border-left: 4px solid {SENTIMENT_COLORS.get(dominant, COLORS['secondary'])};">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <div>
-                    <span style="font-size:1.6em; font-weight:bold;">{safe_symbol}</span>
-                    <span style="color:#8B949E; margin-left:10px;">{safe_resolved}</span>
-                </div>
-                <span class="sentiment-badge sentiment-badge-{safe_dominant}">{safe_dominant.upper()}</span>
-            </div>
-            <div style="color:#8B949E; font-size:0.85em; margin-top:4px;">
-                {mention_count} mentions -- updated {safe_updated}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # AI Verdict
-        st.markdown("#### AI Verdict")
-        with st.spinner("Generating verdict..."):
-            verdict = generate_briefing(resolved, symbol, ticker_data)
-        st.markdown(f'<div class="briefing-verdict">"{html_mod.escape(str(verdict))}"<br><small style="color:#8B949E;">-- MarketPulse AI</small></div>', unsafe_allow_html=True)
-
-        # Sentiment trend chart
-        by_day = ticker_data.get('sentiment_by_day', {})
-        if by_day:
-            st.markdown("#### Sentiment Trend (7 days)")
-            fig = sentiment_trend(by_day)
-            st.plotly_chart(fig, width="stretch")
-
-        # News headlines
-        st.markdown("#### News Headlines")
-        top_posts = ticker_data.get('top_posts', {})
-        news_sentiment = ticker_data.get('news_sentiment') or 'N/A'
-        news_posts = top_posts.get('news', [])
-        badge_class = f"sentiment-badge-{news_sentiment}" if news_sentiment != 'N/A' else "sentiment-badge-neutral"
-        safe_sent = html_mod.escape(str(news_sentiment))
-        st.markdown(f"""
-        <div class="source-card">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <strong>NEWS</strong>
-                <span class="sentiment-badge {badge_class}">{safe_sent.upper()}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        for post in news_posts[:5]:
-            st.caption(f"> {_strip_html(post['text'])[:120]}...")
+        _render_ticker_body(resolved, symbol, ticker_data)
 
     st.markdown("---")
 
@@ -188,87 +307,93 @@ if search_clicked and query.strip():
 @st.dialog("Ticker Detail", width="large")
 def _show_ticker_detail(company: str, data: dict):
     """Modal popup showing full sentiment breakdown for a ticker."""
-    from src.agent.briefing import generate_briefing
-
     symbol = data.get('symbol', company.upper())
-    dominant = data.get('dominant_sentiment', 'neutral')
-    mention_count = data.get('mention_count', 0)
-    last_updated = data.get('last_updated', 'unknown')
-
-    safe_symbol = html_mod.escape(str(symbol))
-    safe_resolved = html_mod.escape(str(company))
-    safe_dominant = html_mod.escape(str(dominant))
-    safe_updated = html_mod.escape(str(last_updated[:16] if last_updated != 'unknown' else 'unknown'))
-
-    # Header
-    st.markdown(f"""
-    <div class="briefing-card" style="border-left: 4px solid {SENTIMENT_COLORS.get(dominant, COLORS['secondary'])};">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <div>
-                <span style="font-size:1.6em; font-weight:bold;">{safe_symbol}</span>
-                <span style="color:#8B949E; margin-left:10px;">{safe_resolved}</span>
-            </div>
-            <span class="sentiment-badge sentiment-badge-{safe_dominant}">{safe_dominant.upper()}</span>
-        </div>
-        <div style="color:#8B949E; font-size:0.85em; margin-top:4px;">
-            {mention_count} mentions -- updated {safe_updated}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # AI Verdict
-    st.markdown("#### AI Verdict")
-    with st.spinner("Generating verdict..."):
-        verdict = generate_briefing(company, symbol, data)
-    st.markdown(
-        f'<div class="briefing-verdict">"{html_mod.escape(str(verdict))}"'
-        f'<br><small style="color:#8B949E;">-- MarketPulse AI</small></div>',
-        unsafe_allow_html=True,
-    )
-
-    # Sentiment trend chart
-    by_day = data.get('sentiment_by_day', {})
-    if by_day:
-        st.markdown("#### Sentiment Trend (7 days)")
-        fig = sentiment_trend(by_day)
-        st.plotly_chart(fig, width="stretch")
-
-    # News headlines
-    st.markdown("#### News Headlines")
-    top_posts = data.get('top_posts', {})
-    news_sentiment = data.get('news_sentiment') or 'N/A'
-    news_posts = top_posts.get('news', [])
-    badge_class = f"sentiment-badge-{news_sentiment}" if news_sentiment != 'N/A' else "sentiment-badge-neutral"
-    safe_sent = html_mod.escape(str(news_sentiment))
-    st.markdown(f"""
-    <div class="source-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <strong>NEWS</strong>
-            <span class="sentiment-badge {badge_class}">{safe_sent.upper()}</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    for post in news_posts[:5]:
-        st.caption(f"> {_strip_html(post['text'])[:120]}...")
+    _render_ticker_body(company, symbol, data)
 
 
 # ── Market Overview grid (SECONDARY) ─────────────────────────────────────────
 if not ticker_results:
     st.info(
-        "No market data yet. Click **Refresh Data** in the sidebar to ingest and analyze."
+        "No market data yet. Auto-refresh is running — give it a few seconds, "
+        "or click **Refresh Data** in the sidebar."
     )
 else:
-    # Top 50 tickers by mention count (already sorted desc from DB)
-    top_tickers = dict(list(ticker_results.items())[:50])
-    st.markdown(f"### Market Overview ({len(top_tickers)} tickers)")
+    st.markdown(f"### Market Overview ({len(ticker_results)} tickers)")
+
+    # Market mood bar — overall bullish/bearish split across every tracked ticker
+    mood = {'bullish': 0, 'neutral': 0, 'meme': 0, 'bearish': 0}
+    for _d in ticker_results.values():
+        mood[_d.get('dominant_sentiment', 'neutral')] = mood.get(_d.get('dominant_sentiment', 'neutral'), 0) + 1
+    _mood_total = sum(mood.values()) or 1
+    _mood_bar = ''.join(
+        f'<span style="display:block;height:100%;width:{c / _mood_total * 100:.1f}%;background:{SENTIMENT_COLORS.get(k)}"></span>'
+        for k, c in mood.items() if c > 0
+    )
+    _mood_legend = ' &nbsp; '.join(
+        f'<b style="color:{SENTIMENT_COLORS.get(k)}">{c}</b> {k}'
+        for k, c in mood.items() if c > 0
+    )
+    st.markdown(
+        f'<div style="color:#8B949E;font-size:0.85rem;margin-bottom:4px">Market mood — {_mood_legend}</div>'
+        f'<div style="display:flex;height:10px;border-radius:6px;overflow:hidden;background:#21262D;margin-bottom:1rem">{_mood_bar}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Controls: filter + sentiment + sort
+    c_filter, c_sent, c_sort = st.columns([2, 1, 1])
+    with c_filter:
+        _q = st.text_input("Filter", placeholder="Filter by symbol or company…",
+                           label_visibility="collapsed", key="grid_filter").strip().lower()
+    with c_sent:
+        _sent_filter = st.selectbox(
+            "Sentiment", ["All", "Bullish", "Bearish", "Neutral", "Meme"],
+            label_visibility="collapsed", key="grid_sentiment",
+        )
+    with c_sort:
+        _sort = st.selectbox(
+            "Sort", ["Most mentions", "Heating up", "Most bullish", "Most bearish", "A–Z"],
+            label_visibility="collapsed", key="grid_sort",
+        )
+
+    # Apply filters
+    items = list(ticker_results.items())
+    if _q:
+        items = [(c, d) for c, d in items
+                 if _q in str(c).lower() or _q in str(d.get('symbol', '')).lower()]
+    if _sent_filter != "All":
+        items = [(c, d) for c, d in items
+                 if d.get('dominant_sentiment') == _sent_filter.lower()]
+
+    # Apply sort
+    if _sort == "Most mentions":
+        items.sort(key=lambda kv: kv[1].get('mention_count', 0), reverse=True)
+    elif _sort == "Heating up":
+        def _mom(d):
+            s = _daily_scores(d)
+            return (s[-1][1] - s[-2][1]) if len(s) >= 2 else 0
+        items.sort(key=lambda kv: (_mom(kv[1]), kv[1].get('mention_count', 0)), reverse=True)
+    elif _sort == "Most bullish":
+        items.sort(key=lambda kv: kv[1].get('bullish_ratio', 0), reverse=True)
+    elif _sort == "Most bearish":
+        items.sort(key=lambda kv: kv[1].get('bearish_ratio', 0), reverse=True)
+    elif _sort == "A–Z":
+        items.sort(key=lambda kv: str(kv[1].get('symbol', kv[0])))
+
+    items = items[:150]
+    if not items:
+        st.caption("No tickers match your filter.")
+    else:
+        st.caption(f"Showing {len(items)} tickers")
 
     # Ticker card grid
     cols = st.columns(3)
-    for i, (company, data) in enumerate(top_tickers.items()):
+    for i, (company, data) in enumerate(items):
         sentiment = data.get('dominant_sentiment', 'neutral')
         symbol = data.get('symbol', company.upper())
         mentions = data.get('mention_count', 0)
         conf = data.get('avg_confidence', 0.0)
+        arrow, arrow_color, arrow_tip = _sentiment_momentum(data)
+        spark = _sparkline_html(data)
 
         with cols[i % 3]:
             safe_sym = html_mod.escape(str(symbol))
@@ -278,7 +403,10 @@ else:
             with card:
                 st.markdown(f"""
                 <div>
-                    <div style="font-size:1.2em; font-weight:bold;">{safe_sym}</div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <span style="font-size:1.2em; font-weight:bold;">{safe_sym}</span>
+                        <span style="color:{arrow_color};font-weight:700" title="{html_mod.escape(arrow_tip)}">{arrow}</span>
+                    </div>
                     <div style="color:#8B949E; font-size:0.85em;">{safe_co}</div>
                     <div style="margin:6px 0;">
                         <span class="sentiment-badge sentiment-badge-{safe_sent}">{safe_sent.upper()}</span>
@@ -286,9 +414,10 @@ else:
                     <div style="color:#8B949E; font-size:0.8em;">
                         {mentions} mentions -- {conf:.0%} confidence
                     </div>
+                    {spark}
                 </div>
                 """, unsafe_allow_html=True)
-                if st.button("View Details", key=f"ticker_btn_{i}", width="stretch"):
+                if st.button("View Details", key=f"view_{i}_{symbol}", width="stretch"):
                     _show_ticker_detail(company, data)
 
     # Most mentioned bar chart

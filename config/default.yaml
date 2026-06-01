@@ -13,7 +13,12 @@ ingestion:
   news:
     query_terms: ["stock market", "earnings", "IPO", "SEC", "Fed",
                   "Wall Street", "S&P 500", "Nasdaq", "Dow Jones",
-                  "tech stocks", "AI stocks", "energy stocks", "bank stocks"]
+                  "tech stocks", "AI stocks", "energy stocks", "bank stocks",
+                  "semiconductor stocks", "EV stocks", "biotech stocks",
+                  "retail stocks", "airline stocks", "crypto stocks",
+                  "healthcare stocks", "chip stocks", "analyst upgrade",
+                  "analyst downgrade", "earnings beat", "stock guidance",
+                  "merger acquisition", "dividend stocks", "small cap stocks"]
     symbols: [
       "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "JPM", "V",
       "UNH", "XOM", "LLY", "MA", "HD", "PG", "COST", "JNJ", "MRK", "ABBV",

@@ -88,7 +88,7 @@ class TestPerEntryErrorHandling:
         ingester = NewsIngester({'ingestion': {'news': {}}})
         rows = ingester._parse_feed(
             'https://fake.com/rss', 'test',
-            set(), datetime(2026, 1, 1), datetime(2026, 12, 31)
+            datetime(2026, 1, 1), datetime(2026, 12, 31)
         )
         assert len(rows) == 1
         assert rows[0]['text'].startswith('Good article')

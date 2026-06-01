@@ -1,7 +1,54 @@
 """Reusable Plotly chart components for MarketPulse dashboard."""
 
 import plotly.graph_objects as go
+import streamlit as st
 from .styles import SENTIMENT_COLORS, COLORS
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _fetch_closes(symbol: str, period: str = "1mo"):
+    """Daily closing prices for a symbol (cached 15 min). Returns (dates, closes)
+    or None. Kept out of the hot path so a missing/invalid ticker never errors."""
+    try:
+        import yfinance as yf
+        df = yf.download(symbol, period=period, progress=False)
+        if df is None or df.empty:
+            return None
+        if hasattr(df.columns, "levels"):
+            df.columns = df.columns.get_level_values(0)
+        closes = df["Close"].dropna()
+        if closes.empty:
+            return None
+        return [d.strftime("%Y-%m-%d") for d in closes.index], [float(c) for c in closes]
+    except Exception:
+        return None
+
+
+def price_line(symbol: str, period: str = "1mo") -> go.Figure | None:
+    """Compact price line for the ticker detail card. None if no data."""
+    data = _fetch_closes(symbol, period)
+    if not data:
+        return None
+    dates, closes = data
+    up = closes[-1] >= closes[0]
+    color = COLORS["bullish"] if up else COLORS["bearish"]
+    fig = go.Figure(go.Scatter(
+        x=dates, y=closes, mode="lines",
+        line=dict(color=color, width=2),
+        fill="tozeroy", fillcolor=f"rgba({'0,200,83' if up else '255,23,68'},0.08)",
+        hovertemplate="%{x}<br>$%{y:.2f}<extra></extra>",
+    ))
+    pct = (closes[-1] / closes[0] - 1) * 100 if closes[0] else 0
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        height=180, margin=dict(l=0, r=0, t=28, b=20), showlegend=False,
+        title=dict(text=f"Price {period} &nbsp; <span style='color:{color}'>{pct:+.1f}%</span>",
+                   font=dict(size=13, color=COLORS["text_secondary"]), x=0.0),
+        yaxis=dict(gridcolor="#30363D", tickprefix="$", side="right"),
+        xaxis=dict(gridcolor="#30363D", showticklabels=False),
+    )
+    return fig
 
 
 def sentiment_pie(sentiment_dict, title="Sentiment Distribution"):

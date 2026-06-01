@@ -18,8 +18,15 @@ DB_PATH = os.path.join(
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
+    # WAL + busy timeout so the background auto-refresh (writer) and the UI
+    # (reader) don't trip over each other with "database is locked".
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.Error:
+        pass
     return conn
 
 

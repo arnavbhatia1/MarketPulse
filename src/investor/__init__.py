@@ -18,6 +18,10 @@ from src.investor.mcp_client import (
     scan_gap_movers,
     get_smart_money_signal,
     get_futures_positioning,
+    get_sec_filings,
+    get_insider_trades,
+    get_search_trends,
+    check_risk,
 )
 
 __all__ = [
@@ -38,4 +42,8 @@ __all__ = [
     "scan_gap_movers",
     "get_smart_money_signal",
     "get_futures_positioning",
+    "get_sec_filings",
+    "get_insider_trades",
+    "get_search_trends",
+    "check_risk",
 ]

@@ -5,8 +5,11 @@ data/models/*.json
 data/models/v*/
 !data/models/.gitkeep
 data/marketpulse.db
+data/*.db-wal
+data/*.db-shm
 data/financial_mcp.db
 data/portfolio_id.txt
+data/bot_state.json
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -22,3 +25,4 @@ venv/
 .streamlit
 docs/
 .claude/
+README.md

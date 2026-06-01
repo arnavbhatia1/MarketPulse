@@ -7,8 +7,12 @@ from datetime import datetime
 from src.investor.bot_engine import (
     get_state as _get_bot_state,
     get_engine as _get_engine,
+    load_state as _load_bot_state,
     MAX_POSITIONS,
 )
+
+# Resume a persisted/seeded ledger once per process so the Edge panel starts warm.
+_load_bot_state()
 
 st.set_page_config(page_title="Trading Bot", page_icon="\U0001F4C8", layout="wide")
 
@@ -23,6 +27,7 @@ try:
         is_connected, detect_market_regime, get_vix_analysis,
         analyze_ticker, get_fundamentals, get_momentum, score_ticker,
         get_smart_money_signal, get_futures_positioning,
+        get_sec_filings, get_insider_trades, get_search_trends, check_risk,
     )
     mcp_available = is_connected()
 except (ConnectionError, Exception):
@@ -38,6 +43,52 @@ if not mcp_available:
 
 st.markdown("## Trading Bot")
 st.caption("Powered by financial-mcp")
+
+
+# -- Cached MCP wrappers -------------------------------------------------------
+# These tools hit yfinance/CFTC over the network (~1s each). Caching them keeps
+# the page snappy: flipping the chart period or any other rerun reuses results
+# instead of re-fetching every card.
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _c_analyze(sym):
+    return analyze_ticker(sym)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _c_score(sym):
+    return score_ticker(sym)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _c_fundamentals(sym):
+    return get_fundamentals(sym)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _c_momentum(sym):
+    return get_momentum(sym)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_smart_money(market):
+    return get_smart_money_signal(market)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_futures(market):
+    return get_futures_positioning(market)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_sec(sym):
+    return get_sec_filings(sym, filing_type="8-K", count=5)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_insider(sym):
+    return get_insider_trades(sym, days=90)
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _c_trends(keywords):
+    return get_search_trends(keywords)
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _c_risk(pid):
+    return check_risk(pid)
 
 
 # ==============================================================================
@@ -90,7 +141,7 @@ st.divider()
 
 from app.components.trading_charts import (
     candlestick_chart, score_gauge, cftc_positioning_bars,
-    stress_gauge, sector_allocation_bars,
+    stress_gauge, sector_allocation_bars, equity_curve_chart,
 )
 
 st.markdown("#### Ticker Analysis")
@@ -117,7 +168,7 @@ if selected_ticker:
             st.warning(f"No chart data for {selected_ticker}")
 
     with col_analysis:
-        analysis = analyze_ticker(selected_ticker)
+        analysis = _c_analyze(selected_ticker)
         if "error" not in analysis:
             price = analysis.get("price")
             score_data_full = analysis.get("score", {})
@@ -127,15 +178,34 @@ if selected_ticker:
                     score_gauge(score_data_full.get("score", 0), "Composite"),
                     width="stretch",
                 )
+                # Sentiment bridge — blend MarketPulse RSS sentiment into the score
+                from app.pipeline_runner import get_ticker_cache as _gtc
+                _cache = _gtc()
+                _rss = next((d for d in _cache.values()
+                             if str(d.get("symbol", "")).upper() == selected_ticker), None)
+                if _rss:
+                    base = score_data_full.get("score", 0)
+                    tilt = round((_rss.get("bullish_ratio", 0) - _rss.get("bearish_ratio", 0)) * 10, 1)
+                    adj = max(0, min(100, base + tilt))
+                    sent = _rss.get("dominant_sentiment", "neutral")
+                    scolor = {"bullish": "#00C853", "bearish": "#FF1744"}.get(sent, "#FFD600")
+                    st.markdown(
+                        f"<div style='text-align:center;font-size:0.85rem'>"
+                        f"News: <b style='color:{scolor}'>{sent.upper()}</b> "
+                        f"&nbsp;·&nbsp; score {base:.0f} <b style='color:{scolor}'>{tilt:+.0f}</b> "
+                        f"&rarr; <b>{adj:.0f}</b></div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.caption("MarketPulse RSS sentiment blended into the bot's score")
         else:
             st.warning(f"Could not analyze {selected_ticker}")
 
     # Score cards: Fundamentals | Momentum | Smart Money
-    score_result = score_ticker(selected_ticker)
+    score_result = _c_score(selected_ticker)
     col_fund, col_mom, col_smart = st.columns(3)
 
     with col_fund:
-        fund = get_fundamentals(selected_ticker)
+        fund = _c_fundamentals(selected_ticker)
         if "error" not in fund:
             val_score = score_result.get("valuation", 0) if "error" not in score_result else 0
             css = "score-high" if val_score >= 65 else ("score-low" if val_score < 35 else "score-mid")
@@ -150,7 +220,7 @@ if selected_ticker:
             st.caption(f"Market Cap: {fund.get('market_cap', 'N/A')}")
 
     with col_mom:
-        mom = get_momentum(selected_ticker)
+        mom = _c_momentum(selected_ticker)
         if "error" not in mom:
             mom_score = score_result.get("momentum", 0) if "error" not in score_result else 0
             css = "score-high" if mom_score >= 65 else ("score-low" if mom_score < 35 else "score-mid")
@@ -170,7 +240,7 @@ if selected_ticker:
     with col_smart:
         st.markdown('<div class="smart-money-card">', unsafe_allow_html=True)
         st.markdown("**Smart Money**")
-        signal_data = get_smart_money_signal("E-MINI S&P 500")
+        signal_data = _c_smart_money("E-MINI S&P 500")
         if "error" not in signal_data:
             sig = signal_data.get("signal", "neutral")
             sig_color = "#00C853" if sig == "bullish" else ("#FF1744" if sig == "bearish" else "#FFD600")
@@ -179,7 +249,7 @@ if selected_ticker:
                 unsafe_allow_html=True,
             )
             st.caption(signal_data.get("reason", ""))
-            positioning = get_futures_positioning("E-MINI S&P 500")
+            positioning = _c_futures("E-MINI S&P 500")
             if "error" not in positioning:
                 reports = positioning.get("reports", [])
                 if reports:
@@ -195,6 +265,62 @@ if selected_ticker:
             st.caption("Smart money data unavailable")
         st.markdown('</div>', unsafe_allow_html=True)
 
+    # -- Catalysts: SEC filings · insider trades · search interest -------------
+    with st.expander(f"Catalysts for {selected_ticker} — SEC · Insider · Search Trends"):
+        cat1, cat2, cat3 = st.columns(3)
+        with cat1:
+            st.markdown("**Recent SEC Filings (8-K)**")
+            sec = _c_sec(selected_ticker)
+            filings = sec.get("filings", []) if "error" not in sec else []
+            if filings:
+                for f in filings[:5]:
+                    ftype = f.get("type") or f.get("form") or "Filing"
+                    fdate = f.get("date") or f.get("filing_date") or ""
+                    furl = f.get("url") or f.get("link") or "#"
+                    st.markdown(
+                        f"<a href='{furl}' target='_blank' style='color:#58A6FF;text-decoration:none'>"
+                        f"{ftype}</a> <span style='color:#6E7681;font-size:0.8rem'>{fdate}</span>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.caption("No recent 8-K filings.")
+        with cat2:
+            st.markdown("**Insider Activity (90d)**")
+            ins = _c_insider(selected_ticker)
+            trades = ins.get("insider_trades", []) if "error" not in ins else []
+            if trades:
+                buys = sum(1 for t in trades if str(t.get("transaction_type", t.get("type", ""))).upper().startswith(("P", "B")))
+                sells = len(trades) - buys
+                st.markdown(
+                    f"<span style='color:#00C853;font-weight:700'>{buys} buys</span> · "
+                    f"<span style='color:#FF1744;font-weight:700'>{sells} sells</span> "
+                    f"<span style='color:#6E7681'>({len(trades)} filings)</span>",
+                    unsafe_allow_html=True,
+                )
+                for t in trades[:4]:
+                    who = t.get("insider") or t.get("name") or t.get("reporting_owner") or "Insider"
+                    st.caption(f"{who} — {t.get('transaction_type', t.get('type', 'filing'))}")
+            else:
+                st.caption("No insider filings found.")
+        with cat3:
+            st.markdown("**Search Interest**")
+            tr = _c_trends(selected_ticker)
+            series = tr.get("interest_over_time") or tr.get("data") or [] if "error" not in tr else []
+            if series:
+                vals = [pt.get("value") if isinstance(pt, dict) else pt for pt in series]
+                vals = [v for v in vals if isinstance(v, (int, float))]
+                if vals:
+                    trend = "rising" if vals[-1] >= vals[0] else "falling"
+                    tcolor = "#00C853" if trend == "rising" else "#FF1744"
+                    st.markdown(
+                        f"Google search interest <b style='color:{tcolor}'>{trend}</b> "
+                        f"({vals[0]:.0f} → {vals[-1]:.0f})", unsafe_allow_html=True,
+                    )
+                else:
+                    st.caption("Trend data unavailable.")
+            else:
+                st.caption("Trend data unavailable.")
+
     st.divider()
 
 
@@ -204,6 +330,32 @@ if selected_ticker:
 
 st.divider()
 st.markdown("#### Bot Control")
+
+# -- Bot settings (outside the live fragment so widgets stay stable) ----------
+_bs = _get_bot_state()
+with st.expander("⚙ Bot Settings", expanded=not _bs.is_running):
+    if _bs.is_running:
+        st.caption("Stop the bot to change starting capital. Other settings apply live.")
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    _cap = sc1.number_input(
+        "Starting capital ($)", min_value=10_000, max_value=1_000_000,
+        value=int(_bs.starting_capital), step=5_000,
+        disabled=_bs.is_running, key="cfg_capital",
+    )
+    _maxpos = sc2.slider("Max positions", 1, 30, int(_bs.max_positions), key="cfg_maxpos")
+    _minsc = sc3.slider("Min score to buy", 40, 90, int(_bs.min_score), key="cfg_minscore")
+    _riskcap = sc4.slider("Max risk / trade (%)", 1, 10, int(round(_bs.max_risk_per_trade * 100)), key="cfg_risk")
+    _bridge = st.checkbox(
+        "Blend MarketPulse news sentiment into scores (the two-tab bridge)",
+        value=_bs.sentiment_bridge, key="cfg_bridge",
+    )
+    # Apply to live bot state
+    if not _bs.is_running:
+        _bs.starting_capital = float(_cap)
+    _bs.max_positions = int(_maxpos)
+    _bs.min_score = float(_minsc)
+    _bs.max_risk_per_trade = _riskcap / 100.0
+    _bs.sentiment_bridge = _bridge
 
 
 @st.fragment(run_every=1)
@@ -269,7 +421,13 @@ def _bot_live_panel():
         with col_pnl:
             st.metric("Total P&L", f"${state.total_pnl:+,.2f}")
         with col_npos:
-            st.metric("Open Positions", f"{len(state.open_positions)} / {MAX_POSITIONS}")
+            st.metric("Open Positions", f"{len(state.open_positions)} / {state.max_positions}")
+
+        # -- Equity curve -----------------------------------------------------
+        eq_fig = equity_curve_chart(state.equity_curve, state.starting_capital)
+        if eq_fig is not None:
+            st.markdown("##### Equity Curve")
+            st.plotly_chart(eq_fig, width="stretch", key="equity_curve")
 
         # -- Quant stats (the math that matters) ------------------------------
         s = state.stats
@@ -355,6 +513,41 @@ def _bot_live_panel():
                 })
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
+            # -- Risk & exposure (MCP check_risk) -----------------------------
+            with st.expander("Risk & Exposure"):
+                risk = _c_risk(state.portfolio_id)
+                if "error" not in risk:
+                    stress = risk.get("stress", {}) or {}
+                    sectors = risk.get("sector_allocation", {}) or {}
+                    drawdowns = stress.get("scenario_drawdowns", {}) or {}
+                    rk1, rk2 = st.columns(2)
+                    with rk1:
+                        sscore = stress.get("stress_score", 0)
+                        scolor = "#FF1744" if sscore > 0.30 else ("#FFD600" if sscore > 0.15 else "#00C853")
+                        st.markdown(
+                            f"<div style='color:#8B949E;font-size:0.8rem'>Stress score (worst-case drawdown)</div>"
+                            f"<div style='color:{scolor};font-size:1.6rem;font-weight:700'>{sscore * 100:.1f}%</div>",
+                            unsafe_allow_html=True,
+                        )
+                        vuln = stress.get("vulnerable_sectors", [])
+                        if vuln:
+                            st.caption("Vulnerable: " + ", ".join(vuln))
+                        if drawdowns:
+                            st.plotly_chart(
+                                stress_gauge(sscore, drawdowns),
+                                width="stretch", key="risk_stress",
+                            )
+                    with rk2:
+                        if sectors:
+                            st.plotly_chart(
+                                sector_allocation_bars(sectors),
+                                width="stretch", key="risk_sectors",
+                            )
+                        else:
+                            st.caption("No sector exposure yet.")
+                else:
+                    st.caption(f"Risk data unavailable: {risk.get('error', '')}")
+
         # -- Activity log -----------------------------------------------------
         if state.trade_log:
             st.markdown("##### Activity Log")
@@ -368,14 +561,17 @@ def _bot_live_panel():
                         if entry["action"] == "SELL"
                         else ""
                     )
-                    st.markdown(
+                    line = (
                         f"<small style='color:#8B949E'>[{entry['time']}]</small> "
                         f"<span style='color:{color};font-weight:700'>{entry['action']}</span> "
                         f"<b>{entry['ticker']}</b> {entry['shares']}sh "
                         f"@ ${entry['price']:.2f} (score {entry['score']:.0f})"
-                        f"{pnl_str} — {entry['reason']}",
-                        unsafe_allow_html=True,
+                        f"{pnl_str} — {entry['reason']}"
                     )
+                    # Streamlit renders $...$ as LaTeX math, which mangles any line
+                    # with two dollar signs (e.g. trailing-stop reasons). Swap $ for
+                    # the HTML entity so prices always render literally.
+                    st.markdown(line.replace("$", "&#36;"), unsafe_allow_html=True)
     elif state.is_running:
         st.info("Bot is starting — creating portfolio...")
     else:

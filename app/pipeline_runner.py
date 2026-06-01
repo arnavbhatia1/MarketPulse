@@ -86,14 +86,22 @@ def refresh_pipeline(start_date_str=None, end_date_str=None, progress_callback=N
     # Optionally train/retrain model if enough labeled data
     _maybe_train_model(df, config)
 
+    # Coverage stats for the UI (how much of the news we could classify)
+    total_posts = len(df)
+    labeled_posts = int(df['programmatic_label'].notna().sum()) if 'programmatic_label' in df.columns else 0
+    source_summary['total_posts'] = total_posts
+    source_summary['labeled_posts'] = labeled_posts
+    source_summary['label_coverage'] = (labeled_posts / total_posts) if total_posts else 0.0
+    source_summary['ticker_count'] = len(ticker_results)
+
     return source_summary
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=20)
 def get_ticker_cache() -> dict:
     """
-    Read ticker_cache from SQLite. Cached for 60 seconds.
-    Fast — no ingestion, no compute.
+    Read ticker_cache from SQLite. Cached briefly so background auto-refreshes
+    surface quickly. Fast — no ingestion, no compute.
     """
     init_db()
     return load_ticker_cache()

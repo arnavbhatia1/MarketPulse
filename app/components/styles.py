@@ -159,5 +159,41 @@ def apply_theme():
 
     /* ── MCP Unavailable Banner ── */
     .mcp-unavailable { background: rgba(255,145,0,0.1); border: 1px solid rgba(255,145,0,0.3); border-radius: 8px; padding: 0.8rem 1rem; color: #FF9100; font-size: 0.85rem; text-align: center; margin-bottom: 1rem; }
+
+    /* ── Ticker Detail Card ── */
+    .tk-header {
+        background: linear-gradient(135deg, #161B22 0%, #0D1117 100%);
+        border: 1px solid #30363D;
+        border-radius: 14px;
+        padding: 1.3rem 1.5rem;
+        margin-bottom: 1rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+    }
+    .tk-symbol { font-size: 2.1rem; font-weight: 800; color: #E6EDF3; line-height: 1; letter-spacing: -0.01em; }
+    .tk-company { color: #8B949E; font-size: 0.95rem; margin-top: 0.25rem; }
+    .tk-meta { color: #6E7681; font-size: 0.78rem; margin-top: 0.6rem; }
+    .tk-badge {
+        display: inline-block; padding: 0.35rem 0.9rem; border-radius: 20px;
+        font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    /* sentiment split bar */
+    .tk-bar { display: flex; height: 10px; border-radius: 6px; overflow: hidden; margin: 0.2rem 0 0.4rem; background: #21262D; }
+    .tk-bar span { display: block; height: 100%; }
+    .tk-bar-legend { display: flex; gap: 1rem; font-size: 0.75rem; color: #8B949E; margin-bottom: 0.4rem; }
+    .tk-bar-legend b { font-weight: 700; }
+
+    /* headline list */
+    .tk-headline {
+        display: block; background: #161B22; border: 1px solid #30363D;
+        border-left: 3px solid #30363D; border-radius: 8px;
+        padding: 0.7rem 0.9rem; margin: 0.5rem 0; text-decoration: none;
+        transition: border-color 0.15s, background 0.15s;
+    }
+    .tk-headline:hover { background: #1C2330; border-left-color: #58A6FF; }
+    .tk-headline-title { color: #E6EDF3; font-size: 0.9rem; font-weight: 600; line-height: 1.35; }
+    .tk-headline-meta { color: #6E7681; font-size: 0.72rem; margin-top: 0.35rem; text-transform: uppercase; letter-spacing: 0.03em; }
+    .tk-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 0.35rem; vertical-align: middle; }
     </style>
     """, unsafe_allow_html=True)

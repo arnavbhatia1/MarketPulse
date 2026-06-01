@@ -1,8 +1,8 @@
 # CLAUDE.md — MarketPulse
 
 Financial sentiment hub powered by free RSS news feeds. Two pages:
-1. **MarketPulse** — search any ticker for sentiment breakdown, AI verdict, 7-day trend (top 50 by mentions)
-2. **Trading Bot** — autonomous paper-trading scalp bot powered by financial-mcp-server
+1. **MarketPulse** — auto-refreshing sentiment hub: search any ticker (sentiment, AI verdict, 7-day trend, price line), plus a sortable/filterable grid of 100+ news-discovered tickers with momentum sparklines and a market-mood bar
+2. **Trading Bot** — autonomous paper-trading bot powered by financial-mcp-server: equity curve, configurable params, live MCP catalysts (SEC/insider/trends), risk panel, and a news-sentiment→score bridge
 
 No API keys required. `ANTHROPIC_API_KEY` is optional (enables AI verdicts; static fallback without it).
 
@@ -34,14 +34,15 @@ Trading Bot: MCP Client connects to financial-mcp-server via SSE
 MarketPulse/
 ├── start.bat                          # One-command launcher (MCP server + Streamlit)
 ├── app/
-│   ├── MarketPulse.py                 # Home page: search bar + top 50 grid + ticker detail dialog
+│   ├── MarketPulse.py                 # Home: search + sortable/filterable mood grid + detail dialog
+│   ├── auto_refresh.py                # Background scheduler — keeps sentiment data fresh
 │   ├── pipeline_runner.py             # refresh_pipeline(), get_ticker_cache(), load_model()
 │   ├── pages/
-│   │   └── 2_Trading_Bot.py           # Market regime + VIX + ticker analysis + autonomous bot control
+│   │   └── 2_Trading_Bot.py           # Regime/VIX + ticker analysis + catalysts + bot control
 │   └── components/
-│       ├── charts.py                  # Plotly chart components (bar, trend)
+│       ├── charts.py                  # Plotly components (bar, trend, price line)
 │       ├── styles.py                  # Dark theme colors, animations, and CSS
-│       └── trading_charts.py          # Candlestick, score gauge, CFTC bars
+│       └── trading_charts.py          # Candlestick, score gauge, CFTC bars, equity curve
 ├── src/
 │   ├── ingestion/
 │   │   ├── base.py                    # Abstract base ingester + REQUIRED_COLUMNS schema
@@ -53,6 +54,7 @@ MarketPulse/
 │   ├── models/
 │   │   └── pipeline.py               # TF-IDF + LogReg training and inference
 │   ├── extraction/
+│   │   ├── ticker_universe.py         # Bundled 200+ symbol→company universe (source of truth)
 │   │   ├── ticker_extractor.py        # Cashtag, bare ticker, company name extraction
 │   │   └── normalizer.py             # Canonical company name normalization
 │   ├── analysis/
@@ -84,9 +86,13 @@ MarketPulse/
 
 ## Trading Bot (`src/investor/bot_engine.py`)
 
-Autonomous paper-trading bot built on probability math — thinks like a casino, not a gambler. Runs continuous cycles (no timer — immediate rescan with 5s pause between cycles).
+Autonomous paper-trading bot built on probability math — thinks like a casino, not a gambler. Runs continuous cycles with a 60s pause between them (MCP scores need time to update). On MCP failure it backs off exponentially (10s→300s) and auto-stops after 10 consecutive failures.
 
-**Cycle:** detect regime → check VIX → retry pending sells → smart exits → scan universe → score candidates → enter/rotate positions → recompute stats → snapshot portfolio
+**Cycle:** detect regime → check VIX → retry pending sells → smart exits → build dynamic universe → score candidates → enter/rotate positions → recompute stats → snapshot portfolio (also persists ledger)
+
+**Dynamic universe:** each cycle is built from MCP scanners (anomalies + volume leaders + gap movers — event-driven catalysts) plus the news-mentioned tickers from the RSS `ticker_cache` — a pool of up to 250 symbols. The pool is shuffled and the top `SCORE_CANDIDATES_LIMIT` (25) are scored per cycle, so over successive cycles the bot rotates across every ticker the news surfaces (it can trade any of them) without blowing the per-cycle time budget. Scoring runs ~1s/symbol via `analyze_ticker`; there is intentionally no `scan_universe` pre-rank (it costs ~3s/symbol and times out on large universes).
+
+**Sentiment bridge:** when enabled (default), each candidate's MCP composite score is blended with MarketPulse RSS sentiment — `tilt = (bullish_ratio - bearish_ratio) × 10`, clamped to ±10 points. This is what lets the news-sentiment page influence what the bot trades; the tilt appears in the buy reason (e.g. "score 78 · news +6").
 
 **Quant Decision Engine:**
 - **Expected Value (EV):** `EV = (WinRate × AvgWin) - (LossRate × AvgLoss)` — computed from actual closed trades every cycle. Only sizes up when EV is positive.
@@ -97,19 +103,39 @@ Autonomous paper-trading bot built on probability math — thinks like a casino,
 - **Hard 2% cap:** never risk more than 2% of portfolio per trade, regardless of Kelly.
 - **Conservative bootstrap:** 1% per trade until 10+ closed trades provide enough data for Kelly (Law of Large Numbers).
 
-**Smart exits (4 triggers):**
-1. Signal reversal — score dropped 30%+ from entry or below 40
-2. Profit taking — score fading 15%+ while position is green (lock gains)
-3. Momentum stall — held 10+ cycles with no score improvement (free slot)
-4. Outlier loss — unrealized loss exceeds 2 standard deviations (cut variance)
+**Smart exits (5 triggers, checked in order):**
+1. Hard stop — price dropped 5% from entry (non-negotiable capital protection)
+2. Trailing stop — price dropped 3% from peak since entry (lock gains after a run-up)
+3. Signal reversal — score dropped 30%+ from entry or below 40
+4. Profit taking — score fading 15%+ while position is green (lock gains)
+5. Outlier loss — unrealized loss exceeds 2 standard deviations (cut variance)
+
+**Re-entry gate:** a ticker sold recently must score 15+ points above its sell score to be re-bought (prevents churn); sell history expires after 24h.
 
 **Position rotation:** When at 20 max positions, sells weakest holding if a new candidate scores 10+ points higher.
 
+**Persistence:** `_snapshot_portfolio` writes the portfolio id + realized trade log to `data/bot_state.json` each cycle; `load_state()` restores it once on page load so the bot resumes warm after a Streamlit restart. `scripts/seed_demo.py` writes an illustrative warm-start ledger for demos.
+
+**Configurable params:** the "⚙ Bot Settings" panel exposes starting capital (edit while stopped), max positions, min score, max risk/trade %, and the sentiment-bridge toggle. These live on `BotState` (`max_positions`, `min_score`, `max_risk_per_trade`, `starting_capital`, `sentiment_bridge`) and are read by the cycle functions.
+
 **Dashboard:** `@st.fragment(run_every=1)` — live-updating panel with:
 - Portfolio value, P&L, open positions count
+- **Equity curve** (portfolio value over time, persisted in `equity_curve`)
 - Edge Statistics: EV/trade, win rate, R:R ratio, half-Kelly %, risk of ruin, streak, σ
 - Open positions table with real-time P&L
+- **Risk & Exposure** expander (MCP `check_risk`: stress score, scenario drawdowns, sector allocation)
 - Activity log streaming buys/sells as they happen
+
+**Ticker Analysis** (above the bot) shows live MCP tools per ticker: candlestick, composite score gauge, news-adjusted score (the bridge), fundamentals/momentum/smart-money cards, and a **Catalysts** expander (`get_sec_filings`, `get_insider_trades`, `get_search_trends`). All per-ticker MCP calls are `st.cache_data`-cached so flipping the chart period stays instant.
+
+---
+
+## MarketPulse page (`app/MarketPulse.py`)
+
+- **Background auto-refresh** (`app/auto_refresh.py`) — a daemon thread runs the RSS→sentiment pipeline every 3 min so data stays fresh without clicking Refresh; the sidebar shows live status + label coverage. Manual "Refresh Data" still forces an immediate run.
+- **Browsable grid** — market-mood bar (bullish/bearish split across all tickers), filter-by-text, sentiment filter, and sort (mentions / heating-up / bullish / bearish / A–Z). Each card shows a momentum arrow (Δ vs prior day) and a 7-day sentiment sparkline.
+- **Ticker detail** (search or card → `@st.dialog`) — sentiment split bar, **price line** (sentiment-vs-price story), AI verdict, 7-day trend, and clickable headlines.
+- **Ticker universe** — `src/extraction/ticker_universe.py` holds 200+ symbol→company mappings; the extractor recognizes any of them, so the grid tracks 100+ news-discovered tickers (not a fixed list).
 
 ---
 
@@ -139,6 +165,7 @@ start.bat                     # starts MCP server + Streamlit on localhost:8501
 - **Two clean pages** — MarketPulse (sentiment) and Trading Bot (MCP-powered)
 - **Data separation** — home page uses only RSS/SQLite; trading bot uses only MCP server
 - **MCP = data layer, bot_engine = decision layer** — the MCP server provides market intelligence; the bot's math determines when to buy/sell and how much to risk
+- **SSE transport (critical)** — `financial-mcp` (the published `financial-mcp-server` package) defaults to **stdio**; the app connects over **SSE on :8520**, so it must be launched with `--transport sse`. Both `start.bat` and `mcp_client._start_mcp_server()` pass this flag. Without it, the Trading Bot page shows "MCP server not running."
 - **Probability over prediction** — position sizing from actual trade statistics (Kelly Criterion), not gut feel or fixed percentages
 - **Many small bets** — 2% max risk per trade, conservative 1% until edge is proven over 10+ trades
 - **Ticker detail as dialog** — `@st.dialog` popup, not a separate page
