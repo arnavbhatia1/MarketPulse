@@ -18,7 +18,8 @@ if _root not in sys.path:
 load_dotenv(os.path.join(_root, '.env'))
 
 from app.components.styles import apply_theme, COLORS, SENTIMENT_COLORS
-from app.components.charts import ticker_mentions_bar, sentiment_trend, price_line
+from app.components.charts import ticker_mentions_bar, sentiment_trend
+from app.components.trading_charts import candlestick_chart
 
 _SENTIMENT_SCORE = {'bullish': 3, 'neutral': 2, 'meme': 1, 'bearish': 0}
 
@@ -123,11 +124,13 @@ def _render_ticker_body(company: str, symbol: str, data: dict) -> None:
     if bar:
         st.markdown(bar, unsafe_allow_html=True)
 
-    # Price line — the "sentiment vs price" story
+    # Price candlestick — same auto-scaled chart as the Trading Bot (the price
+    # line looked flat because it was anchored to $0).
     if symbol:
-        pfig = price_line(str(symbol), period="1mo")
-        if pfig is not None:
-            st.plotly_chart(pfig, width="stretch")
+        cfig = candlestick_chart(str(symbol), period="3mo", interval="1d")
+        if cfig is not None:
+            st.markdown("#### Price (3M)")
+            st.plotly_chart(cfig, width="stretch")
 
     # AI Verdict
     st.markdown("#### AI Verdict")
