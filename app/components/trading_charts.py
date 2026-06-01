@@ -2,7 +2,8 @@
 
 import plotly.graph_objects as go
 import streamlit as st
-import yfinance as yf
+
+from .yfsession import yf_download
 
 BG = "#0D1117"
 GRID = "#21262D"
@@ -12,11 +13,11 @@ RED = "#FF1744"
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def _fetch_ohlc(symbol: str, period: str):
-    """Download OHLC data from yfinance. Cached 10 min so flipping the period
-    (or any page rerun) doesn't re-hit the network for data already fetched."""
+def _fetch_ohlc(symbol: str, period: str, interval: str = "1d"):
+    """Download OHLC data from yfinance at the given interval. Cached 10 min so
+    flipping the period doesn't re-hit the network for data already fetched."""
     try:
-        df = yf.download(symbol, period=period, progress=False)
+        df = yf_download(symbol, period=period, interval=interval, progress=False)
     except Exception:
         return None
     if df is None or df.empty:
@@ -26,9 +27,13 @@ def _fetch_ohlc(symbol: str, period: str):
     return df
 
 
-def candlestick_chart(symbol: str, period: str = "6mo") -> go.Figure | None:
-    """Return a candlestick chart for *symbol* over *period* (data is cached)."""
-    df = _fetch_ohlc(symbol, period)
+def candlestick_chart(symbol: str, period: str = "3mo", interval: str = "1d") -> go.Figure | None:
+    """Candlestick chart for *symbol* over *period* at *interval* (data cached).
+
+    Interval should match the period (e.g. 1h for a week, 1d for months/years)
+    so the chart has enough candles to read. Non-trading gaps are hidden.
+    """
+    df = _fetch_ohlc(symbol, period, interval)
     if df is None or df.empty:
         return None
 
@@ -43,6 +48,11 @@ def candlestick_chart(symbol: str, period: str = "6mo") -> go.Figure | None:
             decreasing_line_color=RED,
         )
     )
+    # Hide non-trading gaps so the candles sit flush instead of leaving holes.
+    rangebreaks = [dict(bounds=["sat", "mon"])]          # weekends
+    if interval.endswith(("m", "h")):                     # intraday → hide overnight
+        rangebreaks.append(dict(bounds=[16, 9.5], pattern="hour"))
+    fig.update_xaxes(rangebreaks=rangebreaks)
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor=BG,

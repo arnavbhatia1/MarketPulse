@@ -34,4 +34,4 @@ jobs:
         run: pytest -q
 
       - name: Page-render smoke (boots both Streamlit pages)
-        run: python scripts/smoke_test.py
+        run: python scripts/render_smoke.py

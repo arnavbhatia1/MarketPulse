@@ -10,8 +10,8 @@ def _fetch_closes(symbol: str, period: str = "1mo"):
     """Daily closing prices for a symbol (cached 15 min). Returns (dates, closes)
     or None. Kept out of the hot path so a missing/invalid ticker never errors."""
     try:
-        import yfinance as yf
-        df = yf.download(symbol, period=period, progress=False)
+        from .yfsession import yf_download
+        df = yf_download(symbol, period=period, progress=False)
         if df is None or df.empty:
             return None
         if hasattr(df.columns, "levels"):

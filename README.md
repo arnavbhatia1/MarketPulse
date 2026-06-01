@@ -125,11 +125,11 @@ Two guards keep broken code off the deployed app:
   ```bash
   git config core.hooksPath .githooks
   ```
-- **GitHub Actions** (`.github/workflows/ci.yml`) runs on every push/PR to `main`: the full offline suite **plus a headless page-render smoke** (`scripts/smoke_test.py`) that boots both Streamlit pages and fails on any load-time error.
+- **GitHub Actions** (`.github/workflows/ci.yml`) runs on every push/PR to `main`: the full offline suite **plus a headless page-render smoke** (`scripts/render_smoke.py`) that boots both Streamlit pages and fails on any load-time error.
 
 ```bash
-pytest -q                      # 243 offline unit tests
-python scripts/smoke_test.py   # boots both pages headless; non-zero on any render error
+pytest -q                        # offline unit tests
+python scripts/render_smoke.py   # boots both pages headless; non-zero on any render error
 ```
 
 > **Bulletproof option:** point Streamlit Cloud at a `release` branch and only fast-forward

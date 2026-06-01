@@ -171,9 +171,17 @@ if selected_ticker:
 
     col_chart, col_analysis = st.columns([2, 1])
     with col_chart:
-        period_map = {"1W": "5d", "1M": "1mo", "3M": "3mo", "1Y": "1y"}
-        period_label = st.radio("Period", ["1W", "1M", "3M", "1Y"], horizontal=True, index=2)
-        fig = candlestick_chart(selected_ticker, period=period_map[period_label])
+        # (period, interval) — granularity scales with the window so the chart
+        # always has enough candles: hourly for a week, daily for months/year.
+        period_cfg = {
+            "1W": ("5d", "1h"),
+            "1M": ("1mo", "1d"),
+            "3M": ("3mo", "1d"),
+            "1Y": ("1y", "1d"),
+        }
+        period_label = st.radio("Period", list(period_cfg), horizontal=True, index=2)
+        _period, _interval = period_cfg[period_label]
+        fig = candlestick_chart(selected_ticker, period=_period, interval=_interval)
         if fig:
             st.plotly_chart(fig, width="stretch")
         else:
