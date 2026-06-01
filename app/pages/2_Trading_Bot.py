@@ -91,6 +91,18 @@ def _c_risk(pid):
     return check_risk(pid)
 
 
+def _score_card_html(label, score):
+    """Score card that degrades to N/A when the MCP score is missing/None
+    (e.g. when yfinance data is unavailable) instead of crashing."""
+    if score is None:
+        return (f'<div class="score-card"><div class="score-label">{label}</div>'
+                f'<div class="score-value score-mid">N/A</div></div>')
+    css = "score-high" if score >= 65 else ("score-low" if score < 35 else "score-mid")
+    return (f'<div class="score-card"><div class="score-label">{label}</div>'
+            f'<div class="score-value {css}">{score:.0f}'
+            f'<span style="font-size:1rem;color:#8B949E">/100</span></div></div>')
+
+
 # ==============================================================================
 # ZONE 1: MARKET INTELLIGENCE
 # ==============================================================================
@@ -207,12 +219,8 @@ if selected_ticker:
     with col_fund:
         fund = _c_fundamentals(selected_ticker)
         if "error" not in fund:
-            val_score = score_result.get("valuation", 0) if "error" not in score_result else 0
-            css = "score-high" if val_score >= 65 else ("score-low" if val_score < 35 else "score-mid")
-            st.markdown(f'''<div class="score-card">
-                <div class="score-label">Fundamentals</div>
-                <div class="score-value {css}">{val_score:.0f}<span style="font-size:1rem;color:#8B949E">/100</span></div>
-            </div>''', unsafe_allow_html=True)
+            val_score = score_result.get("valuation") if "error" not in score_result else None
+            st.markdown(_score_card_html("Fundamentals", val_score), unsafe_allow_html=True)
             st.caption(f"P/E: {fund.get('pe_ratio', 'N/A')}")
             st.caption(f"EV/EBITDA: {fund.get('ev_to_ebitda', 'N/A')}")
             st.caption(f"P/B: {fund.get('price_to_book', 'N/A')}")
@@ -222,12 +230,8 @@ if selected_ticker:
     with col_mom:
         mom = _c_momentum(selected_ticker)
         if "error" not in mom:
-            mom_score = score_result.get("momentum", 0) if "error" not in score_result else 0
-            css = "score-high" if mom_score >= 65 else ("score-low" if mom_score < 35 else "score-mid")
-            st.markdown(f'''<div class="score-card">
-                <div class="score-label">Momentum</div>
-                <div class="score-value {css}">{mom_score:.0f}<span style="font-size:1rem;color:#8B949E">/100</span></div>
-            </div>''', unsafe_allow_html=True)
+            mom_score = score_result.get("momentum") if "error" not in score_result else None
+            st.markdown(_score_card_html("Momentum", mom_score), unsafe_allow_html=True)
             m30 = mom.get("price_momentum_30d")
             m90 = mom.get("price_momentum_90d")
             vol = mom.get("volatility")
@@ -274,32 +278,43 @@ if selected_ticker:
             filings = sec.get("filings", []) if "error" not in sec else []
             if filings:
                 for f in filings[:5]:
-                    ftype = f.get("type") or f.get("form") or "Filing"
-                    fdate = f.get("date") or f.get("filing_date") or ""
-                    furl = f.get("url") or f.get("link") or "#"
-                    st.markdown(
-                        f"<a href='{furl}' target='_blank' style='color:#58A6FF;text-decoration:none'>"
-                        f"{ftype}</a> <span style='color:#6E7681;font-size:0.8rem'>{fdate}</span>",
-                        unsafe_allow_html=True,
-                    )
+                    ftype = f.get("filing_type", "Filing")
+                    fdate = f.get("date", "")
+                    furl = f.get("primary_document_url") or ""
+                    if furl:
+                        st.markdown(
+                            f"<a href='{furl}' target='_blank' rel='noopener' style='color:#58A6FF;text-decoration:none'>"
+                            f"{ftype}</a> <span style='color:#6E7681;font-size:0.8rem'>{fdate}</span>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            f"{ftype} <span style='color:#6E7681;font-size:0.8rem'>{fdate}</span>",
+                            unsafe_allow_html=True,
+                        )
             else:
                 st.caption("No recent 8-K filings.")
         with cat2:
-            st.markdown("**Insider Activity (90d)**")
+            st.markdown("**Insider Filings (90d)**")
             ins = _c_insider(selected_ticker)
             trades = ins.get("insider_trades", []) if "error" not in ins else []
             if trades:
-                buys = sum(1 for t in trades if str(t.get("transaction_type", t.get("type", ""))).upper().startswith(("P", "B")))
-                sells = len(trades) - buys
-                st.markdown(
-                    f"<span style='color:#00C853;font-weight:700'>{buys} buys</span> · "
-                    f"<span style='color:#FF1744;font-weight:700'>{sells} sells</span> "
-                    f"<span style='color:#6E7681'>({len(trades)} filings)</span>",
-                    unsafe_allow_html=True,
-                )
-                for t in trades[:4]:
-                    who = t.get("insider") or t.get("name") or t.get("reporting_owner") or "Insider"
-                    st.caption(f"{who} — {t.get('transaction_type', t.get('type', 'filing'))}")
+                st.caption(f"{len(trades)} Form 3/4/5 filing(s)")
+                for t in trades[:5]:
+                    form = t.get("form_type", "Form")
+                    fdate = t.get("filing_date", "")
+                    furl = t.get("url") or ""
+                    if furl:
+                        st.markdown(
+                            f"<a href='{furl}' target='_blank' rel='noopener' style='color:#58A6FF;text-decoration:none'>"
+                            f"Form {form}</a> <span style='color:#6E7681;font-size:0.8rem'>{fdate}</span>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            f"Form {form} <span style='color:#6E7681;font-size:0.8rem'>{fdate}</span>",
+                            unsafe_allow_html=True,
+                        )
             else:
                 st.caption("No insider filings found.")
         with cat3:

@@ -9,7 +9,8 @@ pyyaml>=6.0
 joblib>=1.3.0
 anthropic>=0.40.0
 feedparser>=6.0.0
-yfinance>=0.2.31
-financial-mcp-server
+yfinance>=0.2.40
+curl_cffi>=0.7.0
+financial-mcp-server>=0.1.10
 mcp[cli]
 anyio

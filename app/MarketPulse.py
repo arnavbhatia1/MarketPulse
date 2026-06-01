@@ -47,18 +47,23 @@ def _sentiment_momentum(data: dict):
 
 
 def _sparkline_html(data: dict) -> str:
-    """Tiny CSS bar sparkline of the last 7 days' dominant sentiment."""
+    """Tiny bar sparkline of the last 7 days' dominant sentiment.
+
+    Flex container with a fixed 20px track and flex-end alignment so the bars
+    share a clean baseline and even spacing.
+    """
     scores = _daily_scores(data)[-7:]
     if not scores:
         return ''
+    height_for = {0: 6, 1: 10, 2: 14, 3: 18}  # bearish→bullish
     bars = ''
     for _, score, label in scores:
-        h = 4 + score * 4  # 4–16px tall
+        h = height_for.get(score, 10)
         color = SENTIMENT_COLORS.get(label, COLORS['secondary'])
-        bars += (f'<span style="display:inline-block;width:5px;height:{h}px;'
-                 f'background:{color};margin-right:2px;border-radius:1px;'
-                 f'vertical-align:bottom"></span>')
-    return f'<div style="line-height:0;margin-top:6px">{bars}</div>'
+        bars += (f'<span style="width:6px;height:{h}px;background:{color};'
+                 f'border-radius:1px;flex:0 0 auto"></span>')
+    return (f'<div style="display:flex;align-items:flex-end;gap:3px;'
+            f'height:20px;margin-top:8px">{bars}</div>')
 
 _TAG_RE = re.compile(r'<[^>]+>')
 
